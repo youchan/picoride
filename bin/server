@@ -14,4 +14,4 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-bundle exec ruby app/app.rb -o 0.0.0.0 "$@"
+bundle exec ruby lib/picoruby-esp32-ide/server.rb -o 0.0.0.0 "$@"
