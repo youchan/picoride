@@ -15,7 +15,7 @@
 # 「プロジェクトが初めてこの状態ディレクトリを使うとき」に動的に実行する処理として
 # 素のRubyで書き直してある。シェルのクォート/エスケープに起因するバグ
 # (このセッションで実際に2回踏んだ`\&\&`混入)を構造的に避けられるのが利点。
-module PicorubyEsp32IDE
+module PicorubyEsp32Ide
   module R2P2State
     R2P2_ESP32_REPO_URL = "https://github.com/picoruby/R2P2-ESP32.git"
 
