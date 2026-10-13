@@ -1,0 +1,16 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "optparse"
+require "picoruby_esp32_ide"
+require "picoruby_esp32_ide/server"
+
+options = {}
+OptionParser.new do |op|
+  op.banner = "Usage: picoride [options]"
+  op.on("-p port", "set the port (default is 4567)") { |val| options[:port] = Integer(val) }
+  op.on("-o addr", "set the bind address (default is localhost)") { |val| options[:bind] = val }
+  op.on("-e env", "set the environment (default is development)") { |val| options[:environment] = val.to_sym }
+end.parse!(ARGV)
+
+PicorubyEsp32Ide::Server.run!(options)
