@@ -2,6 +2,7 @@ PATH
   remote: .
   specs:
     picoride (0.1.0)
+      perfect_toml
       puma
       rackup
       sinatra
@@ -20,6 +21,7 @@ GEM
     logger (1.7.0)
     mustermann (3.1.1)
     nio4r (2.7.5)
+    perfect_toml (0.9.1)
     power_assert (3.1.0)
     pp (0.6.4)
       prettyprint
@@ -79,6 +81,7 @@ CHECKSUMS
   logger (1.7.0) sha256=196edec7cc44b66cfb40f9755ce11b392f21f7967696af15d274dde7edff0203
   mustermann (3.1.1) sha256=4c6170c7234d5499c345562ba7c7dfe73e1754286dcc1abb053064d66a127198
   nio4r (2.7.5) sha256=6c90168e48fb5f8e768419c93abb94ba2b892a1d0602cb06eef16d8b7df1dca1
+  perfect_toml (0.9.1)
   picoride (0.1.0)
   power_assert (3.1.0) sha256=fefe98ed5d3140628138f3f9f9194d6ece01f1320e69700d3c928adca7518251
   pp (0.6.4) sha256=dfcb0fce700c41456265922884f9fe195d7fbb0674a3578e6c0f69588e82b570

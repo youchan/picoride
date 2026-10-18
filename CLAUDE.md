@@ -1201,3 +1201,58 @@ build_config.rb)自体は変更していない。「新しいプロジェクト�
   (今回も実機代わりにブラウザ自動操作ツールで開いて発見した)。**JSON
   レスポンスの中身をRubyのHashとして読むときは、トップレベルだけでなく
   ネストした配列/Hashの要素も含めて、必ず`value_of`経由で読むこと。**
+
+### 続き3: ワークスペースを`~/.picoride/workspace.toml`に永続化
+
+ここまでの`workspace_root`/`known_workspaces`はサーバプロセスが生きている間
+だけのメモリ上の状態で、再起動すると消えていた。「一度開いたら覚えておいて
+ほしい、再起動しても開かれた状態で起動してほしい」という要望を受けて、
+`~/.picoride/workspace.toml`への永続化(`lib/picoride/workspace_store.rb`、
+`Picoride::WorkspaceStore`モジュール)を追加した。保存先をプロジェクト本体の
+外(ホームディレクトリ配下)にしたのは`r2p2_state.rb`のR2P2-ESP32状態
+ディレクトリと同じ理由(プロジェクトのgitリポジトリに混ざるべきではない)。
+
+ファイル形式(TOML):
+
+```toml
+active = "最後にアクティブだったワークスペースの絶対パス"
+
+[ワークスペース名]
+path = "絶対パス"
+```
+
+- 読み書きには[PerfectTOML](https://github.com/mame/perfect_toml)
+  (`gem "perfect_toml"`、`picoride.gemspec`に追加)を使っている。単一ファイル・
+  無依存でTOML v1.0.0に完全準拠するパーサ/ジェネレータ。**最初は自前で
+  ミニマムなTOMLリーダー/ライターを手書きしていた**(書く分だけ読めれば
+  十分という割り切りで、シングルクォート文字列のエスケープまで実際に
+  `ruby -e`でラウンドトリップ検証して動くところまで作っていた)が、
+  ユーザーから「mame/perfect_tomlを使ってほしい」とフィードバックがあり
+  差し替えた。既存の外部ライブラリで十分に要件を満たせる(軽量・無依存で、
+  このプロジェクトの「Railsもnpmも持ち込まない」方針と衝突しない)なら、
+  自前実装よりそちらを優先するべきだったという教訓
+- `WorkspaceStore.load`は`{active:, paths:}`を返す。保存されていても
+  **実際に存在しなくなったディレクトリは除外**し、`active`がその除外対象
+  だった場合は`nil`にフォールバックする(ディレクトリが削除/移動された後に
+  再起動しても、存在しないワークスペースを開こうとして`workspace_root`が
+  壊れた状態で起動しないようにするため)
+- `WorkspaceStore.save`は毎回まるごと書き直す(差分更新はしない。開閉は
+  頻繁な操作ではないので素朴な実装で十分と判断)。ワークスペース名
+  (TOMLのテーブル名)は`display_name`(ディレクトリ名。`menu_bar.rb`の
+  `workspace_label`と同じロジックをサーバ側にも持たせてある)から決め、
+  違う場所にある同名ディレクトリ(例: 複数の`projects`)が衝突しないよう
+  `unique_name`で連番サフィックスを振る。クォートや空白を含む名前の扱いは
+  PerfectTOML.generateに任せている(自前実装が担っていた部分がまるごと
+  不要になった)
+- `server.rb`はクラス定義時(`class Server < Sinatra::Base ... end`の
+  本体が評価されるとき、Rubyプロセスの起動時に1回)に`WorkspaceStore.load`を
+  呼んで`workspace_root`/`known_workspaces`の初期値にする。`POST /api/workspace`
+  (ワークスペースを開く/切り替える)のたびに`WorkspaceStore.save`で書き戻す。
+  フロント側(`editor_app.rb`)は元々`component_mounted`で`GET /api/workspace`を
+  呼んでいて、その結果に応じて動く設計だったので、**フロント側の変更は
+  一切不要だった**(サーバが起動時点で既に`workspace_root`を持っていれば、
+  フロントから見れば「たまたま誰かが先に開いていた」のと区別が付かない)
+- 実際に`bundle exec exe/picoride`を起動→ワークスペースを開く→
+  `~/.picoride/workspace.toml`の中身を確認→プロセスを再起動→
+  `GET /api/workspace`が最初から開かれた状態を返す→ブラウザで実際にダイアログ
+  無しでプロジェクトファイルが表示される、まで一通り確認した

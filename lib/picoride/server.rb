@@ -9,6 +9,7 @@ require "yaml"
 require "uri"
 require_relative "background_job"
 require_relative "r2p2_state"
+require_relative "workspace_store"
 
 module Picoride
   class Server < Sinatra::Base
@@ -30,25 +31,30 @@ module Picoride
     end
 
     # プロジェクトを置く場所(= ワークスペース)。固定ディレクトリ・環境変数での
-    # 既定値は持たず、起動時は「未設定」から始まり、UI(メニューバーの
-    # ワークスペース切り替えドロップダウン、または「ファイル」>
-    # 「ワークスペースを開く」)から都度ユーザーが絶対パスを指定して開く方式にして
-    # ある。以前は`__dir__`からの相対パス(`../projects`)を既定値にしていたが、
-    # gemとして配布する構成に変更した際(`lib/`配下への移動)この相対パスの基点が
-    # ズレて実際には存在しないパスを指すようになっていた(「プロジェクトディレクトリが
-    # ない」エラーの原因)。環境変数で上書きする運用に頼る限り同種の問題が
-    # 再発しうるため、暗黙の既定値自体を無くしてユーザーが明示的に開く設計にした。
+    # 既定値は持たず、UI(メニューバーのワークスペース切り替えドロップダウン、
+    # または「ファイル」>「ワークスペースを開く」)から都度ユーザーが指定して
+    # 開く方式にしてある。以前は`__dir__`からの相対パス(`../projects`)を
+    # 既定値にしていたが、gemとして配布する構成に変更した際(`lib/`配下への
+    # 移動)この相対パスの基点がズレて実際には存在しないパスを指すようになって
+    # いた(「プロジェクトディレクトリがない」エラーの原因)。環境変数で
+    # 上書きする運用に頼る限り同種の問題が再発しうるため、暗黙の既定値自体を
+    # 無くしてユーザーが明示的に開く設計にした。
     #
     # workspace_rootは「現在アクティブな」1つだけを指す。known_workspacesは
-    # このセッション(サーバプロセス)で一度でも開いたワークスペースの絶対パスを
-    # 開いた順に積んだ配列で、メニューバーのドロップダウンの選択肢になる
-    # (「ワークスペースは複数開けて、ドロップダウンで切り替えたい」という要望)。
-    # どちらもサーバプロセスが動いている間だけ保持され、ディスクには永続化しない
-    # (再起動したらどちらも空に戻る)。
+    # 一度でも開いたワークスペースの絶対パスを開いた順に積んだ配列で、
+    # メニューバーのドロップダウンの選択肢になる(「ワークスペースは複数開けて、
+    # ドロップダウンで切り替えたい」という要望)。
+    #
+    # どちらも`~/.picoride/workspace.toml`(WorkspaceStore)に永続化する
+    # (「一度開いたら覚えておいてほしい、再起動しても開かれた状態で起動して
+    # ほしい」という要望)。起動時にここで一度読み込んで初期値にし、
+    # `POST /api/workspace`で変更するたびに書き戻す(WorkspaceStore.save参照)。
     class << self
       attr_accessor :workspace_root, :known_workspaces
     end
-    self.known_workspaces = []
+    loaded_workspaces = WorkspaceStore.load
+    self.known_workspaces = loaded_workspaces[:paths]
+    self.workspace_root = loaded_workspaces[:active]
 
     FUNICULAR_ROOT = File.expand_path("funicular", __dir__)
 
@@ -264,6 +270,7 @@ module Picoride
 
       self.class.workspace_root = full
       self.class.known_workspaces << full unless known_workspaces.include?(full)
+      WorkspaceStore.save(active: workspace_root, paths: known_workspaces)
 
       { status: "ok", path: full, known: known_workspaces }.to_json
     end
