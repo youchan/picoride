@@ -29,11 +29,27 @@ module Picoride
       end
     end
 
-    # プロジェクトを置く場所。既定はこのリポジトリ直下のprojects/だが、
-    # Sinatraをホストでネイティブに動かす(Dockerはビルド専用)構成にしたことで
-    # 「プロジェクトをホストの好きな場所に置きたい」が実現できるようになったので、
-    # 環境変数で上書きできるようにしてある。
-    PROJECTS_ROOT = File.expand_path(ENV.fetch("PROJECTS_ROOT", File.join(__dir__, "..", "projects")))
+    # プロジェクトを置く場所(= ワークスペース)。固定ディレクトリ・環境変数での
+    # 既定値は持たず、起動時は「未設定」から始まり、UI(メニューバーの
+    # ワークスペース切り替えドロップダウン、または「ファイル」>
+    # 「ワークスペースを開く」)から都度ユーザーが絶対パスを指定して開く方式にして
+    # ある。以前は`__dir__`からの相対パス(`../projects`)を既定値にしていたが、
+    # gemとして配布する構成に変更した際(`lib/`配下への移動)この相対パスの基点が
+    # ズレて実際には存在しないパスを指すようになっていた(「プロジェクトディレクトリが
+    # ない」エラーの原因)。環境変数で上書きする運用に頼る限り同種の問題が
+    # 再発しうるため、暗黙の既定値自体を無くしてユーザーが明示的に開く設計にした。
+    #
+    # workspace_rootは「現在アクティブな」1つだけを指す。known_workspacesは
+    # このセッション(サーバプロセス)で一度でも開いたワークスペースの絶対パスを
+    # 開いた順に積んだ配列で、メニューバーのドロップダウンの選択肢になる
+    # (「ワークスペースは複数開けて、ドロップダウンで切り替えたい」という要望)。
+    # どちらもサーバプロセスが動いている間だけ保持され、ディスクには永続化しない
+    # (再起動したらどちらも空に戻る)。
+    class << self
+      attr_accessor :workspace_root, :known_workspaces
+    end
+    self.known_workspaces = []
+
     FUNICULAR_ROOT = File.expand_path("funicular", __dir__)
 
     # プロジェクトごとに独立したR2P2-ESP32のビルド状態(sdkconfig・build/・
@@ -90,17 +106,26 @@ module Picoride
     PLATFORM_JOB = BackgroundJob.new
 
     helpers do
+      def workspace_root
+        self.class.workspace_root
+      end
+
+      def known_workspaces
+        self.class.known_workspaces
+      end
+
       def available_projects
-        Dir.children(PROJECTS_ROOT).select { |name| File.directory?(File.join(PROJECTS_ROOT, name)) }.sort
+        Dir.children(workspace_root).select { |name| File.directory?(File.join(workspace_root, name)) }.sort
       end
 
       # プロジェクト名をパストラバーサル対策しつつ絶対パスに変換する。
-      # 戻り値は [プロジェクト名, 絶対パス] のペア。
+      # workspace_rootが未設定の場合はここに来る前にbeforeフィルタ
+      # (require_workspace!)で弾かれている前提。
       def project_root(name)
         raise ArgumentError, "invalid project" if name.include?(File::SEPARATOR) || name.include?("..")
 
-        full = File.expand_path(File.join(PROJECTS_ROOT, name))
-        root_with_sep = PROJECTS_ROOT + File::SEPARATOR
+        full = File.expand_path(File.join(workspace_root, name))
+        root_with_sep = workspace_root + File::SEPARATOR
         raise ArgumentError, "invalid project" unless full.start_with?(root_with_sep) && File.directory?(full)
 
         full
@@ -171,6 +196,27 @@ module Picoride
       end
     end
 
+    # ワークスペースが開かれていなくても使える/api/*(ワークスペース自体を
+    # 開くためのエンドポイント群)。残りの/api/*はワークスペース(workspace_root)が
+    # 開かれていないと処理できない(project_rootがworkspace_root前提のため)ので、
+    # ここで先に弾いておくことで、各ルートで個別にnilチェックを書かずに済む。
+    WORKSPACE_EXEMPT_API_PATHS = ["/api/workspace", "/api/browse"].freeze
+
+    # パターン付きbefore(例: `before %r{...}`)にすると、Sinatraがそのパターンを
+    # ルーティングエンジン(Mustermann)でコンパイルしようとする。Mustermannは
+    # 独自に文字列全体へのアンカーを付与する実装になっていて、渡した正規表現が
+    # (`\A`/`\z`はおろか`^`/`$`でも)既にアンカーを含むと
+    # `Mustermann::CompileError`になる(実際に起動して確認した)。パターン無しの
+    # `before do ... end`にして、Mustermannを経由しない素のRubyの文字列比較で
+    # パスを判定する。
+    before do
+      next unless request.path_info.start_with?("/api/") &&
+                  !WORKSPACE_EXEMPT_API_PATHS.include?(request.path_info)
+
+      content_type :json
+      json_error(400, "workspace is not open") unless workspace_root
+    end
+
     get "/" do
       erb :index
     end
@@ -185,6 +231,131 @@ module Picoride
 
       content_type "text/plain", charset: "utf-8"
       File.read(full)
+    end
+
+    # 現在開いているワークスペース(絶対パス、未設定ならnull)と、このセッションで
+    # 一度でも開いたワークスペースの一覧(known、メニューバーのドロップダウンの
+    # 選択肢)を返す。before フィルタの対象外にしてある唯一の/api/*エンドポイント。
+    get "/api/workspace" do
+      content_type :json
+      { path: workspace_root, known: known_workspaces }.to_json
+    end
+
+    # ワークスペースを開く(新規に指定した場合)、または既にknown_workspacesに
+    # あるものへ切り替える(どちらも同じエンドポイントで、違いは渡されたpathが
+    # 既知かどうかだけ)。body(JSON): { path: "/abs/path/to/dir" }。
+    # 既存の(あるいはこれから使う)ディレクトリを指定するだけで、ここでは
+    # 作成はしない(作成は「新しいプロジェクト」がワークスペース配下に行う)。
+    post "/api/workspace" do
+      content_type :json
+
+      payload =
+        begin
+          JSON.parse(request.body.read)
+        rescue JSON::ParserError
+          json_error(400, "invalid json body")
+        end
+
+      path = payload["path"].to_s.strip
+      json_error(400, "path is required") if path.empty?
+
+      full = File.expand_path(path)
+      json_error(400, "directory does not exist") unless File.directory?(full)
+
+      self.class.workspace_root = full
+      self.class.known_workspaces << full unless known_workspaces.include?(full)
+
+      { status: "ok", path: full, known: known_workspaces }.to_json
+    end
+
+    # --- ディレクトリブラウザ(「ワークスペースを開く」のフォルダ選択UI) -------
+    #
+    # ワークスペースの絶対パスを一行のテキストで入力させる代わりに、「よくある
+    # ファイルビューア」のようにディレクトリを辿って選べるようにするためのAPI。
+    # ワークスペース自体をまだ選んでいない状態でも使える必要がある(これを
+    # 使ってワークスペースを選ぶため)ので、WORKSPACE_EXEMPT_API_PATHSに
+    # /api/browse を含めてある。GET /api/files等(ワークスペース配下の対象拡張子の
+    # ファイル一覧)とは別物: ここではファイルシステム上の任意の場所の
+    # サブディレクトリだけを列挙する(どのワークスペースにも属さない)。
+
+    # ドット始まりのディレクトリ(.git・.cache等)は、プロジェクト内のファイル
+    # 一覧(GET /api/files等)と同じ理由で一覧から除外し、見た目をすっきりさせる。
+    def list_browse_entries(path)
+      names = Dir.children(path).select do |name|
+        !name.start_with?(".") && File.directory?(File.join(path, name))
+      end
+      names.sort.map { |name| { name: name, path: File.join(path, name) } }
+    end
+
+    # ファイルシステムのルート("/")では".."しても自分自身になるので、
+    # その場合はparentをnilにして「これ以上は上がれない」ことを表す。
+    def browse_parent(path)
+      parent = File.expand_path(File.join(path, ".."))
+      parent == path ? nil : parent
+    end
+
+    # 指定ディレクトリ(省略時はホームディレクトリ)のサブディレクトリ一覧を返す。
+    # 「最初はホームディレクトリが開いている状態で」という要望により、
+    # pathが空ならDir.home(Linux上は$HOME)を使う。
+    get "/api/browse" do
+      content_type :json
+
+      raw = params[:path].to_s.strip
+      full = raw.empty? ? Dir.home : File.expand_path(raw)
+
+      json_error(400, "directory does not exist") unless File.directory?(full)
+
+      entries =
+        begin
+          list_browse_entries(full)
+        rescue Errno::EACCES
+          json_error(400, "permission denied")
+        end
+
+      { path: full, parent: browse_parent(full), entries: entries }.to_json
+    end
+
+    # 新しいフォルダを作成する。body(JSON): { path: "親ディレクトリの絶対パス", name: "新しいフォルダ名" }。
+    # 「新しいフォルダ」ボタンを押す動機は大抵そこを開きたいからなので、
+    # 作成後はそのフォルダ自身をGETと同じ形(path/parent/entries)で返し、
+    # フロント側はそのままそこへ移動したものとして扱う。
+    post "/api/browse" do
+      content_type :json
+
+      payload =
+        begin
+          JSON.parse(request.body.read)
+        rescue JSON::ParserError
+          json_error(400, "invalid json body")
+        end
+
+      parent_path = payload["path"].to_s.strip
+      json_error(400, "path is required") if parent_path.empty?
+
+      full_parent = File.expand_path(parent_path)
+      json_error(400, "directory does not exist") unless File.directory?(full_parent)
+
+      name = payload["name"].to_s.strip
+      json_error(400, "name is required") if name.empty?
+      json_error(400, "invalid name") if name.include?("/") || name == "." || name == ".."
+
+      full = File.join(full_parent, name)
+      json_error(409, "already exists") if File.exist?(full)
+
+      begin
+        Dir.mkdir(full)
+      rescue Errno::EACCES
+        json_error(400, "permission denied")
+      end
+
+      entries =
+        begin
+          list_browse_entries(full)
+        rescue Errno::EACCES
+          []
+        end
+
+      { path: full, parent: full_parent, entries: entries }.to_json
     end
 
     # 編集可能なプロジェクト一覧を返す
@@ -210,7 +381,7 @@ module Picoride
       name = payload["name"].to_s
       json_error(400, "invalid project name") unless valid_name?(name)
 
-      full = File.join(PROJECTS_ROOT, name)
+      full = File.join(workspace_root, name)
       json_error(409, "project already exists") if File.exist?(full)
 
       FileUtils.mkdir_p(File.join(full, APP_DIRNAME))

@@ -7,9 +7,9 @@
 #
 #   docker build -t picoride-builder .
 #
-# プロジェクトの置き場所(既定はこのリポジトリ直下のprojects/)や、R2P2-ESP32の
-# 状態ディレクトリの置き場所(既定は~/.picoride/r2p2-esp32/)は、
-# PROJECTS_ROOT / R2P2_STATE_ROOT 環境変数で上書きできる(lib/picoride/server.rb参照)。
+# プロジェクトの置き場所(ワークスペース)は起動時には決まっておらず、起動後に
+# ブラウザの「ファイル」>「ワークスペースを開く」から絶対パスを指定して開く
+# (lib/picoride/server.rb の POST /api/workspace 参照)。
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

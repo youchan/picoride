@@ -54,6 +54,9 @@ class EditorApp < Funicular::Component
 
   def initialize_state
     {
+      workspace: nil, # 開いているワークスペースの絶対パス。未設定ならnil
+      known_workspaces: [], # このセッションで一度でも開いたワークスペースの絶対パス配列
+      loading_workspace: true,
       projects: [],
       loading_projects: true,
       current_project: nil,
@@ -75,6 +78,9 @@ class EditorApp < Funicular::Component
       file_menu_open: false,
       prompt_dialog: nil, # { kind:, title:, label:, placeholder:, confirm_label:, error:, context_dir: } または nil
       open_project_dialog_open: false,
+      # { path:, parent:, entries:, loading:, error:, creating:, create_error:, open_error: } または nil(閉じている)。
+      # 「ワークスペースを開く」のディレクトリブラウザ(DirectoryBrowserDialog)の状態。
+      workspace_browser: nil,
       context_menu: nil, # { kind:, path:, x:, y: } または nil。open_tree_context_menu参照
       settings_platform: nil,
       settings_vm: '',
@@ -97,7 +103,7 @@ class EditorApp < Funicular::Component
   end
 
   def component_mounted
-    load_project_list
+    load_workspace
     setup_terminal
     watch_for_terminal_reconnect
   end
@@ -116,22 +122,25 @@ class EditorApp < Funicular::Component
 
   def render
     div(class: 'app') do
-      # 最上部のメニュー/グローバルステータスバー。プロジェクト切り替えも
-      # ここのドロップダウンに集約している(サイドバーはファイル一覧専用)。
+      # 最上部のメニュー/グローバルステータスバー。ワークスペースの切り替えも
+      # ここのドロップダウンに集約している(プロジェクトの切り替えは「ファイル」>
+      # 「プロジェクトを開く…」のOpenProjectDialogに一本化。サイドバーはファイル
+      # 一覧専用)。
       component(MenuBar,
-        projects: state[:projects],
-        loading_projects: state[:loading_projects],
+        workspace: state[:workspace],
+        known_workspaces: state[:known_workspaces],
         current_project: state[:current_project],
         project_config: state[:project_config],
         build_status: state[:build_status],
         building: state[:building],
         platform_building: state[:platform_building],
         file_menu_open: state[:file_menu_open],
-        on_project_select: ->(name) { select_project(name) },
+        on_workspace_select: ->(path) { open_workspace(path) },
         on_settings: -> { open_settings_dialog },
         on_setup: -> { start_platform_setup },
         on_build: -> { start_build },
         on_file_menu_toggle: -> { toggle_file_menu },
+        on_open_workspace: -> { open_workspace_browser },
         on_new_project: -> { open_new_project_dialog },
         on_open_project: -> { open_open_project_dialog },
         on_add_mrbgem: -> { open_add_mrbgem_dialog },
@@ -148,6 +157,26 @@ class EditorApp < Funicular::Component
           error: state[:prompt_dialog][:error],
           on_confirm: ->(value) { handle_prompt_confirm(value) },
           on_cancel: -> { patch(prompt_dialog: nil) }
+        )
+      end
+
+      if state[:workspace_browser]
+        browser = state[:workspace_browser]
+        component(DirectoryBrowserDialog,
+          path: browser[:path],
+          parent: browser[:parent],
+          entries: browser[:entries],
+          loading: browser[:loading],
+          error: browser[:error],
+          creating: browser[:creating],
+          create_error: browser[:create_error],
+          open_error: browser[:open_error],
+          on_navigate: ->(path) { load_browse_dir(path) },
+          on_open: -> { open_workspace(browser[:path]) },
+          on_start_create: -> { start_create_folder },
+          on_confirm_create: ->(name) { confirm_create_folder(name) },
+          on_cancel_create: -> { cancel_create_folder },
+          on_cancel: -> { patch(workspace_browser: nil) }
         )
       end
 
@@ -318,7 +347,9 @@ class EditorApp < Funicular::Component
   # だけを持つ。
 
   def render_file_tree
-    if state[:loading_files]
+    if state[:workspace].nil?
+      div(class: 'sidebar-message') { 'ワークスペースが開かれていません。メニューバーの「ワークスペースを開く」から開いてください' }
+    elsif state[:loading_files]
       div(class: 'sidebar-message') { '読み込み中…' }
     elsif state[:files].empty? && state[:dirs].empty?
       div(class: 'sidebar-message') { '編集できるファイルがありません' }
@@ -838,13 +869,93 @@ class EditorApp < Funicular::Component
     end
   end
 
-  # --- ファイルメニュー(新規プロジェクト/プロジェクトを開く/mrbgemを追加/新規ファイル/新しいフォルダ) --
+  # --- ファイルメニュー(ワークスペースを開く/新規プロジェクト/プロジェクトを開く/mrbgemを追加/新規ファイル/新しいフォルダ) --
 
   def toggle_file_menu
     patch(file_menu_open: !state[:file_menu_open])
   end
 
+  # 「ワークスペースを開く」ダイアログを開く。常にホームディレクトリから始める
+  # (「最初はホームディレクトリが開いている状態で」という要望)。pathを渡さずに
+  # load_browse_dirを呼ぶと、サーバ側(GET /api/browse)がDir.homeへ解決する。
+  def open_workspace_browser
+    patch(file_menu_open: false, context_menu: nil, workspace_browser: {
+      path: nil, parent: nil, entries: [], loading: true, error: nil,
+      creating: false, create_error: nil, open_error: nil
+    })
+    load_browse_dir(nil)
+  end
+
+  # ディレクトリブラウザで別の場所へ移動する(パンくず・一覧項目クリック・
+  # 「上へ」ボタン、いずれもこれを通る)。失敗しても現在表示中の一覧は保持し
+  # (壊れたリンクで迷子にならないように)、エラーメッセージだけ出す。
+  def load_browse_dir(path)
+    return unless state[:workspace_browser]
+
+    patch(workspace_browser: state[:workspace_browser].merge(loading: true, error: nil))
+
+    query = path.to_s.empty? ? '' : "?path=#{encode(path)}"
+    Funicular::HTTP.get("/api/browse#{query}") do |response|
+      next unless state[:workspace_browser]
+
+      if response.ok
+        data = response.data || {}
+        patch(workspace_browser: state[:workspace_browser].merge(
+          path: value_of(data, 'path'),
+          parent: value_of(data, 'parent'),
+          entries: value_of(data, 'entries') || [],
+          loading: false,
+          error: nil
+        ))
+      else
+        patch(workspace_browser: state[:workspace_browser].merge(loading: false, error: response.error_message))
+      end
+    end
+  end
+
+  def start_create_folder
+    return unless state[:workspace_browser]
+    patch(workspace_browser: state[:workspace_browser].merge(creating: true, create_error: nil))
+  end
+
+  def cancel_create_folder
+    return unless state[:workspace_browser]
+    patch(workspace_browser: state[:workspace_browser].merge(creating: false, create_error: nil))
+  end
+
+  def confirm_create_folder(name)
+    browser = state[:workspace_browser]
+    return unless browser
+
+    cleaned = name.to_s.strip
+    if cleaned.empty?
+      patch(workspace_browser: browser.merge(create_error: '入力してください'))
+      return
+    end
+
+    Funicular::HTTP.post('/api/browse', { path: browser[:path], name: cleaned }) do |response|
+      next unless state[:workspace_browser]
+
+      if response.ok
+        data = response.data || {}
+        patch(workspace_browser: state[:workspace_browser].merge(
+          path: value_of(data, 'path'),
+          parent: value_of(data, 'parent'),
+          entries: value_of(data, 'entries') || [],
+          loading: false,
+          error: nil,
+          creating: false,
+          create_error: nil
+        ))
+      else
+        patch(workspace_browser: state[:workspace_browser].merge(create_error: response.error_message))
+      end
+    end
+  end
+
   def open_new_project_dialog
+    return if state[:workspace].nil?
+
     patch(file_menu_open: false, context_menu: nil, prompt_dialog: {
       kind: :new_project,
       title: '新しいプロジェクト',
@@ -856,6 +967,7 @@ class EditorApp < Funicular::Component
   end
 
   def open_open_project_dialog
+    return if state[:workspace].nil?
     patch(file_menu_open: false, context_menu: nil, open_project_dialog_open: true)
   end
 
@@ -958,6 +1070,55 @@ class EditorApp < Funicular::Component
     dialog = state[:prompt_dialog]
     return unless dialog
     patch(prompt_dialog: dialog.merge(error: (message && !message.empty?) ? message : '失敗しました'))
+  end
+
+  # ワークスペースを開く(新規にダイアログから指定した場合も、メニューバーの
+  # ドロップダウンでknown_workspacesの中から切り替えた場合も、どちらもこれを通る)。
+  # 既に開いているワークスペースを選び直した場合は何もしない。
+  #
+  # 切り替え前のプロジェクト/ファイル関連のstateは全部そのワークスペースに
+  # 属さないものなので、select_projectと同じく作業中の編集状態(textareaの
+  # 内容含む)をクリアしてから、新しいワークスペースのプロジェクト一覧を取り直す。
+  def open_workspace(path)
+    if path == state[:workspace]
+      # 既に開いているワークスペースをブラウザ経由で選び直した場合は、
+      # 何もせずダイアログだけ閉じる(ドロップダウン経由なら元々何もしない)。
+      patch(workspace_browser: nil) if state[:workspace_browser]
+      return
+    end
+
+    Funicular::HTTP.post('/api/workspace', { path: path }) do |response|
+      if response.ok
+        patch(
+          workspace_browser: nil,
+          workspace: value_of(response.data, 'path'),
+          known_workspaces: value_of(response.data, 'known') || [],
+          projects: [],
+          loading_projects: true,
+          current_project: nil,
+          files: [],
+          dirs: [],
+          loading_files: false,
+          collapsed_dirs: [],
+          current_path: nil,
+          content: '',
+          saved_content: '',
+          status: '',
+          status_kind: '',
+          settings_dialog_open: false,
+          project_config: default_project_config
+        )
+        sync_textarea('')
+        load_project_list
+      elsif state[:workspace_browser]
+        # ダイアログ(DirectoryBrowserDialog)経由ならダイアログ内にエラーを出す。
+        patch(workspace_browser: state[:workspace_browser].merge(open_error: response.error_message))
+      else
+        # ドロップダウンでの切り替え(ダイアログを経由しない)はトップレベルの
+        # ステータス表示でエラーを伝える(load_project_list失敗時と同じパターン)。
+        patch(status: 'ワークスペースを開けませんでした', status_kind: 'error')
+      end
+    end
   end
 
   def create_project(name)
@@ -1145,6 +1306,22 @@ class EditorApp < Funicular::Component
   end
 
   # --- サーバとのやりとり ----------------------------------------------
+
+  # 起動時にサーバが(同じプロセスのまま前のブラウザセッションなどで)既に
+  # ワークスペースを開いているかどうか・これまでに開いたワークスペース一覧
+  # (known_workspaces、メニューバーのドロップダウンの選択肢)を確認する。
+  # 以前はここでワークスペース未設定ならダイアログを自動表示していたが、
+  # 「それはやめてほしい」というフィードバックを受けて廃止した。未設定の間は
+  # メニューバーのドロップダウンが「ワークスペースを開く」ボタンとして
+  # 表示される(menu_bar.rb参照)ので、ユーザーがそれを押すまで何もしない。
+  def load_workspace
+    Funicular::HTTP.get('/api/workspace') do |response|
+      path = response.ok ? value_of(response.data, 'path') : nil
+      known = response.ok ? (value_of(response.data, 'known') || []) : []
+      patch(workspace: path, known_workspaces: known, loading_workspace: false)
+      load_project_list if path
+    end
+  end
 
   def load_project_list
     Funicular::HTTP.get('/api/projects') do |response|

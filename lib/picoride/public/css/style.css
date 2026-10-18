@@ -53,6 +53,13 @@ html, body {
   white-space: nowrap;
 }
 
+.menu-workspace-select {
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .menu-bar-spacer {
   flex: 1;
 }
@@ -769,6 +776,105 @@ esp-web-install-button {
   padding: 0 16px 12px;
   font-size: 12px;
   color: var(--text-dim);
+}
+
+/* DirectoryBrowserDialog(「ワークスペースを開く」のディレクトリ選択UI) */
+.directory-browser-dialog {
+  width: 460px;
+  max-width: calc(100vw - 32px);
+}
+
+.directory-browser-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 0 16px 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.breadcrumb-segment {
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+.breadcrumb-segment:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.breadcrumb-current {
+  cursor: default;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.breadcrumb-current:hover {
+  background: transparent;
+}
+
+.breadcrumb-sep {
+  color: var(--text-dim);
+}
+
+.directory-browser-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 16px 8px;
+}
+
+.directory-browser-list {
+  margin: 0 16px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.directory-browser-message {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.directory-browser-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.directory-browser-item:hover {
+  background: var(--bg-toolbar);
+}
+
+.directory-browser-item-icon {
+  font-size: 13px;
+}
+
+.directory-browser-create {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px 0;
+}
+
+.directory-browser-create input {
+  flex: 1;
+  min-width: 160px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 13px;
 }
 
 /* Prismのトークンカラー(one-dark寄りのシンプルな配色) */
