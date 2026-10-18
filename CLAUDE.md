@@ -125,7 +125,7 @@ POSTは409)なので、共通処理を `BackgroundJob` クラス(`app.rb`)に抽
 (Dockerのentrypoint(`R2P2-ESP32/docker/Dockerfile`)は起動時に一度export済みだが、
 `docker exec` 等で入った場合はexportされていないことがあり、それに頼らない実装にした)。
 
-UI側(`lib/picoruby_esp32_ide/funicular/ruby/components/editor_app.rb`)は実行中、
+UI側(`lib/picoride/funicular/ruby/components/editor_app.rb`)は実行中、
 `JS.global.setTimeout(3000) { refresh_xxx_status }` で3秒おきに自動的にログを
 取りに行く(runningでなくなったら止まる)。「ログを更新」ボタンはこれとは別に、
 すぐ最新状態を見たいときの手動トリガーとして残してある。
@@ -451,21 +451,21 @@ ESP Component Registryを見る別の仕組みなので影響を受けない)。
 ### 新しい構成
 
 - `Dockerfile` — ESP-IDFツールチェインだけを持つビルド専用イメージ(後述)。
-  `docker build -t picoruby-esp32-ide-builder .` で事前にビルドしておく
+  `docker build -t picoride-builder .` で事前にビルドしておく
 - `bin/server` — Sinatraをホストでネイティブに起動するスクリプト
   (`bundle exec exe/picoride`のラッパー)。旧`bin/dev`は削除した
-- `lib/picoruby_esp32_ide/r2p2_state.rb` — プロジェクトごとのR2P2-ESP32状態を
+- `lib/picoride/r2p2_state.rb` — プロジェクトごとのR2P2-ESP32状態を
   管理するモジュール(詳細後述)
 - `PROJECTS_ROOT` / `R2P2_STATE_ROOT` / `PICORUBY_BUILDER_IMAGE`
-  (`lib/picoruby_esp32_ide/server.rb`) —
+  (`lib/picoride/server.rb`) —
   いずれも環境変数で上書き可能。特に`PROJECTS_ROOT`が設定可能になったことで、
   当初の目的だった「プロジェクトをホストの好きな場所に置きたい」が実現している
 
-### プロジェクトごとのR2P2-ESP32状態(`lib/picoruby_esp32_ide/r2p2_state.rb`)
+### プロジェクトごとのR2P2-ESP32状態(`lib/picoride/r2p2_state.rb`)
 
 以前は1つのR2P2-ESP32チェックアウトを全プロジェクトで共有していたが、これを
 プロジェクトごとに独立させた。状態ディレクトリは`R2P2_STATE_ROOT`
-(既定`~/.picoruby-esp32-ide/r2p2-esp32/`)配下に`<project名>`で1つずつ持つ
+(既定`~/.picoride/r2p2-esp32/`)配下に`<project名>`で1つずつ持つ
 (プロジェクト本体の外に置く。R2P2-ESP32はサイズが大きく、ユーザーのプロジェクト
 gitリポジトリに混ざるべきではないため)。
 
@@ -745,7 +745,7 @@ EditorApp直下に置く」設計と全く同じ理由・同じ対処であり�
 ## サイドバーのファイル一覧をツリー表示にした(TreeView)
 
 「ファイル一覧をツリー表示に、フォルダの開閉もできるように」という要望を受けて、
-`FileList`(フラットな一覧、表示専用)を`TreeView`(`lib/picoruby_esp32_ide/funicular/ruby/components/
+`FileList`(フラットな一覧、表示専用)を`TreeView`(`lib/picoride/funicular/ruby/components/
 tree_view.rb`)に置き換えた。
 
 ### 汎用コンポーネントとして設計した
@@ -977,7 +977,7 @@ JSネイティブでもRubyブロックである時点でPicoRuby.wasmを経由�
 
 Sinatraアプリ本体を`gem install`で配布することを前提に、2つの変更をした。
 
-### `lib/picoruby_esp32_ide/server.rb`: classic Sinatra → modular Sinatra
+### `lib/picoride/server.rb`: classic Sinatra → modular Sinatra
 
 それまで`server.rb`は`require "sinatra"`(classicスタイル)でトップレベルに
 `get`/`post`を書く形だった。classicスタイルは`require`しただけで
@@ -987,14 +987,14 @@ gemとして配布するライブラリファイルがrequireされただけで�
 副作用を持つのは好ましくない(将来テストやirbから`require`したら勝手にサーバーが
 立ってしまう)。
 
-そこで`require "sinatra/base"` + `module PicorubyEsp32Ide; class Server <
+そこで`require "sinatra/base"` + `module Picoride; class Server <
 Sinatra::Base; ... end; end`のmodularスタイルに書き換えた。ルート定義
 (`get`/`post`/`delete`)・`helpers do...end`・トップレベルの`def`(いずれも元々
 Rubyのレキシカルスコープに乗っているだけなので)は、クラス本体の中にそのまま
 入れ子にするだけで動く(呼び出され方は変わらない)。`PROJECTS_ROOT`等の定数、
 `BackgroundJob.new`・`R2P2State.ensure_checkout`のような他ファイルの定数参照も、
-`module PicorubyEsp32Ide`の中に入ったことでレキシカルスコープ経由で
-正しく解決されるようになった(`PicorubyEsp32Ide::BackgroundJob`等への
+`module Picoride`の中に入ったことでレキシカルスコープ経由で
+正しく解決されるようになった(`Picoride::BackgroundJob`等への
 明示的な修飾は不要)。
 
 **踏んだ罠**: classicスタイルの`-p`/`-o`/`-e`コマンドラインオプション
@@ -1004,18 +1004,18 @@ Rubyのレキシカルスコープに乗っているだけなので)は、クラ
 (`gem which sinatra`で実際のgemソースを確認して判明)。`require "sinatra/base"`
 に変えるとこの自動パースは丸ごと失われるので、[exe/picoride](exe/picoride)側で
 同等の`-p`/`-o`/`-e`を`OptionParser`で自前実装し、
-`PicorubyEsp32Ide::Server.run!(options)`を明示的に呼ぶようにした。
+`Picoride::Server.run!(options)`を明示的に呼ぶようにした。
 
-### `app/public/` `app/funicular/` `app/views/` → `lib/picoruby_esp32_ide/{public,funicular,views}/`
+### `app/public/` `app/funicular/` `app/views/` → `lib/picoride/{public,funicular,views}/`
 
-gemの`spec.files`は`git ls-files`から`bin/`等を除いたもの(`picoruby_esp32_ide.gemspec`
+gemの`spec.files`は`git ls-files`から`bin/`等を除いたもの(`picoride.gemspec`
 参照)で、実質的に`lib/`配下しか配布対象に入らない。`server.rb`の
 `set :public_folder` / `set :views` / `FUNICULAR_ROOT`はいずれも`__dir__`
 (= `server.rb`自身のディレクトリ)からの相対パスで組み立てているため、
 これらの実体(CSS/JS、Funicularの Rubyコンポーネント、`index.erb`)が
-`lib/picoruby_esp32_ide/`配下に無いと、gem installした環境では存在しない
+`lib/picoride/`配下に無いと、gem installした環境では存在しない
 パスを見てしまい何も配信できなくなる。そのため`git mv`で
-`app/`配下から`lib/picoruby_esp32_ide/`配下へ丸ごと移動した
+`app/`配下から`lib/picoride/`配下へ丸ごと移動した
 (`app/`は空になって消滅)。移動後も`index.erb`内のURLはサーバーのルート
 (`/css/style.css`・`/ruby/components/*.rb`)への参照であり、物理的な
 配置場所には依存しないので書き換え不要だった。
@@ -1031,9 +1031,11 @@ gemの`exe/`に置く実行ファイルは、依存関係やロードパスを**
   リポジトリと無関係な場所で`picoride`コマンドだけ叩いた場合、カレント
   ディレクトリにGemfileが無くて`Bundler::GemfileNotFound`になる(最悪、
   別の無関係なGemfileを拾ってしまう)。gem実行ファイルには不要かつ有害。
-- `require "picoruby-esp32-ide"`(ハイフン)と書かれていたが、`bundle gem`が
-  生成する本体ファイルは常にアンダースコア名(`lib/picoruby_esp32_ide.rb`)なので
-  これはそもそも存在しないファイルを`require`しようとしていた(`LoadError`)。
+- `require "picoruby-esp32-ide"`(当時のgem名をハイフンのまま)と書かれていたが、
+  `bundle gem`が生成する本体ファイルは常にアンダースコア名
+  (当時は`lib/picoruby_esp32_ide.rb`。現在は`picoride`へのリネームにより
+  `lib/picoride.rb`)なので、これはそもそも存在しないファイルを`require`
+  しようとしていた(`LoadError`)。
 
 **検証方法**: この種の「gemとして配布されたときにちゃんと動くか」は
 リポジトリ内で`bundle exec`して動かすだけでは検証できない(Bundlerが

@@ -1,4 +1,4 @@
-module PicorubyEsp32Ide
+module Picoride
   class BackgroundJob
     # ブラウザ(PicoRuby.wasm)側でのJSONパース/描画が重くなりすぎないよう、
     # API経由で返すログは末尾のみに切り詰める。全量は @state[:log] に残る。

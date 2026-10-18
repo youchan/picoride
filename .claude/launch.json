@@ -2,7 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "picoruby-esp32-ide",
+      "name": "picoride",
       "runtimeExecutable": "bundle",
       "runtimeArgs": ["exec", "ruby", "app/app.rb", "-o", "0.0.0.0"],
       "port": 4567

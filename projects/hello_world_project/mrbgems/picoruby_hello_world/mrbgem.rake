@@ -1,4 +1,4 @@
-# picoruby-esp32-ide のGemsダイアログ機能を試すためのサンプルmrbgem。
+# picoride のGemsダイアログ機能を試すためのサンプルmrbgem。
 # picoruby本体のmrbgem(mrbgems/picoruby-base64等)と同じ構成に揃えてある。
 #
 # gem名を"picoruby-"で始めておくのが重要: picoruby本体側の
@@ -9,7 +9,7 @@
 MRuby::Gem::Specification.new('picoruby-hello_world') do |spec|
   spec.license = 'MIT'
   spec.author  = 'youchan'
-  spec.summary = 'Hello World sample mrbgem for picoruby-esp32-ide'
+  spec.summary = 'Hello World sample mrbgem for picoride'
 
   # 素の名前("_hello_world"のように先頭にアンダースコアが付く)ではなく
   # require 'hello_world' で読み込めるようにする

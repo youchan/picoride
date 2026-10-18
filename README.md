@@ -14,7 +14,7 @@ The app itself runs natively on your machine (Ruby). Docker is only used to run
 
 ```bash
 bundle install
-docker build -t picoruby-esp32-ide-builder .
+docker build -t picoride-builder .
 ```
 
 ## Run

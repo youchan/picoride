@@ -2,8 +2,8 @@
 # frozen_string_literal: true
 
 require "optparse"
-require "picoruby_esp32_ide"
-require "picoruby_esp32_ide/server"
+require "picoride"
+require "picoride/server"
 
 options = {}
 OptionParser.new do |op|
@@ -13,4 +13,4 @@ OptionParser.new do |op|
   op.on("-e env", "set the environment (default is development)") { |val| options[:environment] = val.to_sym }
 end.parse!(ARGV)
 
-PicorubyEsp32Ide::Server.run!(options)
+Picoride::Server.run!(options)

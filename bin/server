@@ -5,11 +5,11 @@
 # ビルド専用イメージ = Dockerfile を都度起動する)になったので、このスクリプト
 # 自体はDockerを一切使わない。事前に一度だけビルド用イメージを作っておく必要がある:
 #
-#   docker build -t picoruby-esp32-ide-builder .
+#   docker build -t picoride-builder .
 #
 # プロジェクトの置き場所(既定はこのリポジトリ直下のprojects/)や、R2P2-ESP32の
-# 状態ディレクトリの置き場所(既定は~/.picoruby-esp32-ide/r2p2-esp32/)は、
-# PROJECTS_ROOT / R2P2_STATE_ROOT 環境変数で上書きできる(lib/picoruby_esp32_ide/server.rb参照)。
+# 状態ディレクトリの置き場所(既定は~/.picoride/r2p2-esp32/)は、
+# PROJECTS_ROOT / R2P2_STATE_ROOT 環境変数で上書きできる(lib/picoride/server.rb参照)。
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

@@ -10,7 +10,7 @@ require "uri"
 require_relative "background_job"
 require_relative "r2p2_state"
 
-module PicorubyEsp32Ide
+module Picoride
   class Server < Sinatra::Base
     set :public_folder, File.join(__dir__, "public")
     set :views, File.join(__dir__, "views")
@@ -46,7 +46,7 @@ module PicorubyEsp32Ide
 
     # idf.py build / rake setup_xxx を実行するビルド専用イメージ(Dockerfile参照)。
     # `docker build -t #{BUILDER_IMAGE} .` で事前にビルドしておく必要がある。
-    BUILDER_IMAGE = ENV.fetch("PICORUBY_BUILDER_IMAGE", "picoruby-esp32-ide-builder")
+    BUILDER_IMAGE = ENV.fetch("PICORUBY_BUILDER_IMAGE", "picoride-builder")
 
     # ビルド専用コンテナの中で、プロジェクト本体・R2P2-ESP32の状態をそれぞれ
     # bind mountする先の固定パス。ホスト側の実パスとコンテナ内パスの対応は
@@ -599,7 +599,7 @@ module PicorubyEsp32Ide
     end
 
     def generated_build_config_content(root)
-      lines = ["# picoruby-esp32-ide が自動生成する部分(#{MRBGEMS_DIRNAME}/以下のgemを追加する)"]
+      lines = ["# picoride が自動生成する部分(#{MRBGEMS_DIRNAME}/以下のgemを追加する)"]
       project_mrbgem_names(root).each do |name|
         # gemdirはビルドコンテナの中から見たパス(CONTAINER_PROJECT_MOUNT配下)で書く。
         # ホスト側の実パスではない点に注意(r2p2_docker_commandでproject_srcとしてマウントする)。
