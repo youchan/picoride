@@ -1256,3 +1256,59 @@ path = "絶対パス"
   `~/.picoride/workspace.toml`の中身を確認→プロセスを再起動→
   `GET /api/workspace`が最初から開かれた状態を返す→ブラウザで実際にダイアログ
   無しでプロジェクトファイルが表示される、まで一通り確認した
+
+### 続き4: ターゲット・VM・USB Console設定をプロジェクト単位からワークスペース単位に変更
+
+「設定はワークスペース毎に持たせてほしい。workspace.tomlに保存するように
+してほしい」という要望を受けて、ターゲットチップ・VM・USB Console
+(「設定」ダイアログ、旧`ProjectSettingsDialog`)のスコープをプロジェクトから
+ワークスペースへ変更した。以前はプロジェクトごとの隠しファイル`.config.yml`に
+保存していたため、1ワークスペース内の複数プロジェクトがそれぞれ別のターゲットを
+持てたが、変更後は1ワークスペース=1つの設定を全プロジェクトが共有する形になる。
+既存の`.config.yml`を読む処理は削除した(ファイル自体の削除はしない。移行処理は
+行わないクリーンな置き換え)。
+
+- `WorkspaceStore`(workspace_root/known_workspacesと同じ`~/.picoride/workspace.toml`)の
+  各ワークスペースのテーブルに`platform`/`vm`/`usb_console`を追加した:
+  ```toml
+  [workspace_name]
+  path = "絶対パス"
+  platform = "esp32"    # 未設定なら書かない
+  vm = "femtoruby"       # 未設定なら書かない
+  usb_console = false
+  ```
+  TOMLにはnull/nilが無いため(`PerfectTOML.generate`に`nil`値を渡すと
+  `NoMethodError: undefined method 'to_inline_toml' for nil`で落ちることを
+  実際に確認した)、`platform`/`vm`が未設定の間はキー自体を書かない設計にした
+  (`usb_console`は常にboolなのでnil問題は起きず、常に書く)
+- `WorkspaceStore.save`は`settings:`をデフォルト値無しのキーワード必須引数に
+  してある。デフォルト値(例: `{}`)を許すと、「ワークスペースを開いた/
+  切り替えただけ」の呼び出し箇所(`POST /api/workspace`)で、既存の設定を
+  空のHashで上書きして消してしまうミスを構造的に防げないため
+  (実際にこの形で実装しかけて気付いた。`POST /api/workspace`側で
+  `settings: workspace_settings`を渡し忘れると、ワークスペースを開くたびに
+  他の全ワークスペースの設定が消える、という静かなデータ破壊になるところだった)
+- `server.rb`に`Server.workspace_settings`(クラスインスタンス変数、
+  `{絶対パス => {"platform"=>, "vm"=>, "usb_console"=>}}`)を追加。
+  `workspace_root`/`known_workspaces`と同じく起動時に`WorkspaceStore.load`で
+  復元する。`read_workspace_config`ヘルパーが現在のワークスペース
+  (`workspace_root`)の設定を返す(未設定なら`{"platform"=>nil,"vm"=>nil,
+  "usb_console"=>false}`)
+- エンドポイントを`GET/POST /api/projects/:name/config`(プロジェクト名が必須)
+  から`GET/POST /api/workspace/config`(現在のワークスペースが暗黙の対象、
+  プロジェクト名不要)に置き換えた。`POST /api/build`・`POST /api/platform`も
+  `read_project_config(root)`ではなく`read_workspace_config`を見るように変更
+  (`root`=プロジェクトの絶対パスは`project_root`で検証済みなので、常に
+  `workspace_root`配下にある=属するワークスペースの設定を見るのと整合する)
+- フロント側は`ProjectSettingsDialog`を`WorkspaceSettingsDialog`に改名
+  (ファイル名・クラス名とも)。ダイアログのタイトルも
+  `プロジェクト設定(プロジェクト名)`から`ワークスペース設定(ワークスペースの
+  絶対パス)`に変更した。`EditorApp`側は`state[:project_config]`を
+  `state[:workspace_config]`に改名し、`select_project`からは設定のリセット/
+  再取得を削除(プロジェクトを切り替えても設定は変わらないため)。代わりに
+  `load_workspace`(起動時)と`open_workspace`(ワークスペース切り替え時)の
+  両方で`load_workspace_config`(`GET /api/workspace/config`)を呼ぶ
+- 実際に`bundle exec exe/picoride`を起動→ワークスペースを開く→設定を保存→
+  `workspace.toml`の中身を確認→プロセスを再起動→ブラウザで設定が復元されて
+  いることを確認→別のプロジェクトに切り替えても設定(セットアップボタンの
+  ターゲット表示)が変わらないことを確認、まで一通り検証した

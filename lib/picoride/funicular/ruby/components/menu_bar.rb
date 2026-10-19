@@ -227,13 +227,19 @@ class MenuBar < Funicular::Component
     (name.nil? || name.empty?) ? path.to_s : name
   end
 
+  # 設定はワークスペース単位(workspace_store.rb参照)なので、ワークスペース
+  # 未設定の間は保存先が無く押せない。
   def render_settings_button
-    button(class: 'menu-settings', onclick: :handle_settings) { '設定' }
+    if props[:workspace].to_s.empty?
+      button(class: 'menu-settings', disabled: true) { '設定' }
+    else
+      button(class: 'menu-settings', onclick: :handle_settings) { '設定' }
+    end
   end
 
   # ターゲットが未設定なら押せない(設定ダイアログで選んでもらう)。
   def render_setup_button
-    platform = value_of(props[:project_config], 'platform')
+    platform = value_of(props[:workspace_config], 'platform')
 
     if props[:platform_building]
       button(class: 'menu-setup', disabled: true) { 'セットアップ中…' }

@@ -9,12 +9,20 @@ module Picoride
   # プロジェクトディレクトリの外(ホームディレクトリ配下の`.picoride/`。
   # r2p2_state.rbの状態ディレクトリと同じ「プロジェクト本体の外に置く」発想)。
   #
+  # その後「設定(ターゲット・VM・USB Console)はプロジェクトではなくワークスペース
+  # 単位で持たせてほしい」というフィードバックを受けて、各ワークスペースの設定も
+  # 同じファイルに持たせるようにした(`platform`/`vm`/`usb_console`。
+  # server.rbのread_workspace_config/workspace_settings参照)。
+  #
   # TOMLの読み書きは自前実装せず、PerfectTOML(mame/perfect_toml、単一ファイル・
   # 無依存でTOML v1.0.0に完全準拠するパーサ/ジェネレータ)を使う。ファイルは
   #   active = "最後にアクティブだったワークスペースの絶対パス"
   #
   #   [名前]
   #   path = "絶対パス"
+  #   platform = "esp32"       # 未設定なら書かない(TOMLにnullは無いため)
+  #   vm = "femtoruby"         # 同上
+  #   usb_console = false
   # という形(nameはPerfectTOML.generateがHashのキーから自動でTOMLのテーブル名に
   # 変換してくれる。空白を含む名前なども自動でクォートされる)。
   module WorkspaceStore
@@ -23,9 +31,13 @@ module Picoride
 
     module_function
 
-    # 保存されているワークスペース一覧(存在しなくなったディレクトリは除外)と、
-    # 最後にアクティブだったワークスペースの絶対パスを返す。
-    # 戻り値: { active: "絶対パス" または nil, paths: [絶対パスの配列(出現順)] }
+    # 保存されているワークスペース一覧(存在しなくなったディレクトリは除外)、
+    # 最後にアクティブだったワークスペースの絶対パス、各ワークスペースの設定を返す。
+    # 戻り値: {
+    #   active: "絶対パス" または nil,
+    #   paths: [絶対パスの配列(出現順)],
+    #   settings: { "絶対パス" => {"platform"=>, "vm"=>, "usb_console"=>}, ... }
+    # }
     def load
       data =
         begin
@@ -37,21 +49,37 @@ module Picoride
         end
 
       active = data["active"]
-      paths = data.filter_map do |name, value|
+      paths = []
+      settings = {}
+
+      data.each do |name, value|
         next if name == "active" || !value.is_a?(Hash)
-        value["path"]
+
+        path = value["path"]
+        next unless path.is_a?(String) && File.directory?(path)
+
+        paths << path
+        settings[path] = {
+          "platform" => value["platform"],
+          "vm" => value["vm"],
+          "usb_console" => value["usb_console"] == true
+        }
       end
 
-      paths.select! { |path| path.is_a?(String) && File.directory?(path) }
       active = nil unless active.is_a?(String) && paths.include?(active)
 
-      { active: active, paths: paths }
+      { active: active, paths: paths, settings: settings }
     end
 
     # 現在の状態をまるごと書き込む(差分更新ではなく毎回全体を作り直す。
-    # ワークスペースの開閉はそう頻繁な操作ではないので、素朴な全体書き直しで
-    # 十分という判断)。
-    def save(active:, paths:)
+    # ワークスペースの開閉・設定変更はそう頻繁な操作ではないので、素朴な
+    # 全体書き直しで十分という判断)。
+    #
+    # settingsはキーワード必須にしてある(デフォルト値を用意して省略を許すと、
+    # 「ワークスペースを開くだけ」の呼び出し箇所で既存の設定を空のHashで
+    # 上書きしてしまうミスを構造的に防げないため。実際に一度このミスを
+    # 作りかけた)。
+    def save(active:, paths:, settings:)
       FileUtils.mkdir_p(DIR)
 
       data = {}
@@ -59,7 +87,15 @@ module Picoride
 
       used_names = {}
       paths.each do |path|
-        data[unique_name(path, used_names)] = { "path" => path }
+        entry = { "path" => path }
+        s = settings[path]
+        if s
+          # TOMLにnullは無いため、未設定(nil)のキーは書かない。
+          entry["platform"] = s["platform"] if s["platform"]
+          entry["vm"] = s["vm"] if s["vm"]
+          entry["usb_console"] = true if s["usb_console"] == true
+        end
+        data[unique_name(path, used_names)] = entry
       end
 
       PerfectTOML.save_file(PATH, data)

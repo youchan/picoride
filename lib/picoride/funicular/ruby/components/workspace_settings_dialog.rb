@@ -1,16 +1,20 @@
-# プロジェクトごとの設定(ターゲットチップ・VM・USB Console)を編集するダイアログ。
+# ワークスペースごとの設定(ターゲットチップ・VM・USB Console)を編集するダイアログ。
 #
 # 以前はターゲットをメニューバー常設のセレクトで、VM/USB Consoleをビルド開始の
 # たびに出るダイアログで選ばせていたが、「プロジェクトの設定としてプロジェクトに
 # 含めたい」というフィードバックを受けて、プロジェクトごとの隠しファイル
-# (`.config.yml`)に永続化する方式に変更した。このダイアログはその値を編集して
-# 保存するためだけのもので、保存後は「プラットフォームをセットアップ」
+# (`.config.yml`)に永続化する方式に変更した。その後さらに「設定はワークスペース
+# 毎に持たせてほしい」というフィードバックを受けて、スコープをプロジェクトから
+# ワークスペースへ変更し、永続化先も`~/.picoride/workspace.toml`
+# (`workspace_store.rb`)に移した(1ワークスペース内の複数プロジェクトが
+# ターゲット・VM・USB Consoleを共有する形になった)。このダイアログはその値を
+# 編集して保存するためだけのもので、保存後は「プラットフォームをセットアップ」
 # 「ビルド開始」の各ボタンがこの設定値をそのまま使う(都度選び直す必要はない)。
 #
 # 他のパネルと同じく表示専用。値の変更/保存/キャンセルは
 # props[:on_platform_change] / props[:on_vm_change] / props[:on_usb_console_change] /
 # props[:on_save] / props[:on_cancel] 経由で親(EditorApp)に委譲する。
-class ProjectSettingsDialog < Funicular::Component
+class WorkspaceSettingsDialog < Funicular::Component
   PLATFORM_OPTIONS = %w[esp32 esp32c3 esp32c6 esp32h2 esp32p4 esp32s3].freeze
 
   # 空文字は「現在のCMake設定のデフォルトVMのまま」(idf.py buildにVM未指定)を意味する。
@@ -23,7 +27,7 @@ class ProjectSettingsDialog < Funicular::Component
   def render
     div(class: 'dialog-overlay') do
       div(class: 'dialog settings-dialog') do
-        h2 { "プロジェクト設定(#{props[:project]})" }
+        h2 { "ワークスペース設定(#{props[:workspace_path]})" }
         div(class: 'build-options') do
           render_platform_select
           render_vm_select

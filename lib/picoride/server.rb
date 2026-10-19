@@ -5,7 +5,6 @@ require "json"
 require "open3"
 require "shellwords"
 require "fileutils"
-require "yaml"
 require "uri"
 require_relative "background_job"
 require_relative "r2p2_state"
@@ -45,16 +44,22 @@ module Picoride
     # メニューバーのドロップダウンの選択肢になる(「ワークスペースは複数開けて、
     # ドロップダウンで切り替えたい」という要望)。
     #
-    # どちらも`~/.picoride/workspace.toml`(WorkspaceStore)に永続化する
-    # (「一度開いたら覚えておいてほしい、再起動しても開かれた状態で起動して
-    # ほしい」という要望)。起動時にここで一度読み込んで初期値にし、
-    # `POST /api/workspace`で変更するたびに書き戻す(WorkspaceStore.save参照)。
+    # workspace_settingsは絶対パス(known_workspacesの要素)をキーに、そのワーク
+    # スペースのターゲット・VM・USB Console設定を持つHash(詳細は下の「ワーク
+    # スペース設定」の節参照。「設定はプロジェクトではなくワークスペース単位で
+    # 持たせてほしい」という要望で、プロジェクトごとの`.config.yml`から移した)。
+    #
+    # これら3つはいずれも`~/.picoride/workspace.toml`(WorkspaceStore)に
+    # 永続化する(「一度開いたら覚えておいてほしい、再起動しても開かれた状態で
+    # 起動してほしい」という要望)。起動時にここで一度読み込んで初期値にし、
+    # 変更するたびに書き戻す(WorkspaceStore.save参照)。
     class << self
-      attr_accessor :workspace_root, :known_workspaces
+      attr_accessor :workspace_root, :known_workspaces, :workspace_settings
     end
     loaded_workspaces = WorkspaceStore.load
     self.known_workspaces = loaded_workspaces[:paths]
     self.workspace_root = loaded_workspaces[:active]
+    self.workspace_settings = loaded_workspaces[:settings]
 
     FUNICULAR_ROOT = File.expand_path("funicular", __dir__)
 
@@ -120,6 +125,17 @@ module Picoride
         self.class.known_workspaces
       end
 
+      def workspace_settings
+        self.class.workspace_settings
+      end
+
+      # 現在のワークスペース(workspace_root)の設定。未保存(そのワークスペースを
+      # 一度も設定したことがない)なら「何も設定されていない」扱い
+      # (platform/vmはnil、usb_consoleはfalse)にする。
+      def read_workspace_config
+        workspace_settings[workspace_root] || { "platform" => nil, "vm" => nil, "usb_console" => false }
+      end
+
       def available_projects
         Dir.children(workspace_root).select { |name| File.directory?(File.join(workspace_root, name)) }.sort
       end
@@ -181,8 +197,8 @@ module Picoride
 
       # 新規ファイル/フォルダの作成・削除で使う相対パスのチェック。safe_pathの
       # パストラバーサル対策に加えて、ドット始まりのセグメント(R2P2_STATE_DIRNAME・
-      # PROJECT_CONFIG_FILENAME・GENERATED_BUILD_CONFIG_FILENAME等、UI上のファイル
-      # 一覧に出さない前提のものと衝突しうる)や空セグメントを拒否する。
+      # GENERATED_BUILD_CONFIG_FILENAME等、UI上のファイル一覧に出さない前提の
+      # ものと衝突しうる)や空セグメントを拒否する。
       def valid_relative_path?(rel)
         return false if rel.nil? || rel.empty?
 
@@ -270,7 +286,7 @@ module Picoride
 
       self.class.workspace_root = full
       self.class.known_workspaces << full unless known_workspaces.include?(full)
-      WorkspaceStore.save(active: workspace_root, paths: known_workspaces)
+      WorkspaceStore.save(active: workspace_root, paths: known_workspaces, settings: workspace_settings)
 
       { status: "ok", path: full, known: known_workspaces }.to_json
     end
@@ -633,59 +649,30 @@ module Picoride
       { status: "ok", path: rel }.to_json
     end
 
-    # --- プロジェクト設定(ターゲット・VM・USB Console) ----------------------
+    # --- ワークスペース設定(ターゲット・VM・USB Console) --------------------
     #
     # 以前はビルドボタンを押すたびにダイアログでVM/USB Consoleを選ばせ、ターゲット
     # チップはメニューバーの常設セレクトで選ぶ形だったが、「プロジェクトの設定として
     # プロジェクトに含めたい」というフィードバックを受けて、プロジェクトごとに
-    # 隠しファイル`.config.yml`(PROJECT_CONFIG_FILENAME)へ永続化する方式に変更した。
-    # UI側は「設定」ダイアログで編集し、ビルド/プラットフォームセットアップは
-    # その時点の設定値をそのまま使って即座に実行するだけになる。
+    # 隠しファイル`.config.yml`へ永続化する方式に変更した。その後さらに
+    # 「設定はワークスペース毎に持たせてほしい」というフィードバックを受けて、
+    # スコープをプロジェクトからワークスペースへ変更した(1ワークスペース内の
+    # 複数プロジェクトがターゲット・VM・USB Consoleを共有する)。永続化先も
+    # プロジェクトディレクトリの中の`.config.yml`から`~/.picoride/workspace.toml`
+    # (WorkspaceStore、workspace_root/known_workspacesと同じファイル)に移した。
+    # 既存プロジェクトの`.config.yml`は読まなくなるだけで削除はしない(移行処理は
+    # 行わない。クリーンな置き換えという判断)。UI側は「設定」ダイアログで編集し、
+    # ビルド/プラットフォームセットアップはその時点の設定値をそのまま使って
+    # 即座に実行するだけになる。
 
-    PROJECT_CONFIG_FILENAME = ".config.yml"
-
-    # ファイルが無い、あるいは壊れている場合は「何も設定されていない」扱い
-    # (platform/vmはnil = 未選択・デフォルト、usb_consoleはfalse)にする。
-    def read_project_config(root)
-      path = File.join(root, PROJECT_CONFIG_FILENAME)
-      data =
-        begin
-          File.file?(path) ? YAML.safe_load(File.read(path)) : nil
-        rescue Psych::SyntaxError
-          nil
-        end
-      data ||= {}
-
-      {
-        "platform" => data["platform"],
-        "vm" => data["vm"],
-        "usb_console" => data["usb_console"] == true
-      }
-    end
-
-    get "/api/projects/:name/config" do
+    get "/api/workspace/config" do
       content_type :json
-
-      root =
-        begin
-          project_root(params[:name])
-        rescue ArgumentError
-          json_error(400, "invalid project")
-        end
-
-      read_project_config(root).to_json
+      read_workspace_config.to_json
     end
 
     # body(JSON): { platform:, vm:, usb_console: } — platform/vmはnull(未選択)も許可
-    post "/api/projects/:name/config" do
+    post "/api/workspace/config" do
       content_type :json
-
-      root =
-        begin
-          project_root(params[:name])
-        rescue ArgumentError
-          json_error(400, "invalid project")
-        end
 
       payload =
         begin
@@ -701,7 +688,8 @@ module Picoride
       json_error(400, "invalid vm") if vm && !BUILD_VM_FLAGS.key?(vm)
 
       config = { "platform" => platform, "vm" => vm, "usb_console" => payload["usb_console"] == true }
-      File.write(File.join(root, PROJECT_CONFIG_FILENAME), YAML.dump(config))
+      self.class.workspace_settings = workspace_settings.merge(workspace_root => config)
+      WorkspaceStore.save(active: workspace_root, paths: known_workspaces, settings: workspace_settings)
 
       { status: "ok" }.to_json
     end
@@ -870,10 +858,11 @@ module Picoride
 
     # R2P2-ESP32 のビルド(idf.py build)をバックグラウンドで開始する。
     # 実行中に重ねて叩かれた場合は 409 を返す(同時に複数走らせない)。
-    # VM・USB Consoleはリクエストでは受け取らず、そのプロジェクトの`.config.yml`
-    # (read_project_config)に保存されている値をそのまま使う。R2P2-ESP32の状態は
-    # プロジェクトごとに独立している(r2p2_state_dir)ので、初回はここでgit clone
-    # (R2P2State.ensure_checkout)が走り、数分かかることがある。
+    # VM・USB Consoleはリクエストでは受け取らず、そのワークスペースの設定
+    # (read_workspace_config、ターゲットと同じく`.config.yml`ではなく
+    # `~/.picoride/workspace.toml`から読む)に保存されている値をそのまま使う。
+    # R2P2-ESP32の状態はプロジェクトごとに独立している(r2p2_state_dir)ので、
+    # 初回はここでgit clone(R2P2State.ensure_checkout)が走り、数分かかることがある。
     #
     # body(JSON):
     #   project: "hello_world_project" のようなプロジェクト名(必須)。app/以下を
@@ -927,9 +916,9 @@ module Picoride
         FileUtils.cp_r(Dir.glob(File.join(project_app_dir, "*")), storage_home_dir)
       end
 
-      project_config = read_project_config(root)
-      vm = project_config["vm"]
-      usb_console = project_config["usb_console"]
+      workspace_config = read_workspace_config
+      vm = workspace_config["vm"]
+      usb_console = workspace_config["usb_console"]
 
       build_cmd = +"idf.py build"
       build_cmd << " -DPICORB_VM=#{BUILD_VM_FLAGS[vm]}" if vm
@@ -967,9 +956,9 @@ module Picoride
       PLATFORM_JOB.to_response_json
     end
 
-    # 指定プロジェクトの`.config.yml`に設定されているターゲットへ向けて
+    # 現在のワークスペースの設定に設定されているターゲットへ向けて
     # `rake setup_#{platform}` をバックグラウンドで実行する。ターゲット自体は
-    # リクエストでは受け取らず、プロジェクト設定ダイアログで保存された値を使う。
+    # リクエストでは受け取らず、ワークスペース設定ダイアログで保存された値を使う。
     # setup_esp32xxx は deep_clean + setup(mrubyの再ビルド) + idf.py set-target という
     # 重い処理の直列実行(R2P2-ESP32/rakelib/setup.rake参照)。
     #
@@ -994,8 +983,8 @@ module Picoride
           json_error(400, "invalid project")
         end
 
-      platform = read_project_config(root)["platform"]
-      json_error(400, "platform is not configured for this project") if platform.to_s.empty?
+      platform = read_workspace_config["platform"]
+      json_error(400, "platform is not configured for this workspace") if platform.to_s.empty?
 
       # BUILD_JOBとの同時実行を防ぐ理由はPOST /api/build側のコメント参照。
       json_error(409, "build is running") if BUILD_JOB.running?

@@ -74,7 +74,7 @@ class EditorApp < Funicular::Component
       build_log_truncated: false,
       building: false,
       settings_dialog_open: false,
-      project_config: default_project_config,
+      workspace_config: default_workspace_config,
       file_menu_open: false,
       prompt_dialog: nil, # { kind:, title:, label:, placeholder:, confirm_label:, error:, context_dir: } または nil
       open_project_dialog_open: false,
@@ -98,7 +98,7 @@ class EditorApp < Funicular::Component
     }
   end
 
-  def default_project_config
+  def default_workspace_config
     { 'platform' => nil, 'vm' => nil, 'usb_console' => false }
   end
 
@@ -130,7 +130,7 @@ class EditorApp < Funicular::Component
         workspace: state[:workspace],
         known_workspaces: state[:known_workspaces],
         current_project: state[:current_project],
-        project_config: state[:project_config],
+        workspace_config: state[:workspace_config],
         build_status: state[:build_status],
         building: state[:building],
         platform_building: state[:platform_building],
@@ -190,15 +190,15 @@ class EditorApp < Funicular::Component
       end
 
       if state[:settings_dialog_open]
-        component(ProjectSettingsDialog,
-          project: state[:current_project],
+        component(WorkspaceSettingsDialog,
+          workspace_path: state[:workspace],
           platform: state[:settings_platform],
           vm: state[:settings_vm],
           usb_console: state[:settings_usb_console],
           on_platform_change: ->(platform) { patch(settings_platform: platform) },
           on_vm_change: ->(vm) { patch(settings_vm: vm) },
           on_usb_console_change: ->(enabled) { patch(settings_usb_console: enabled) },
-          on_save: -> { save_project_settings },
+          on_save: -> { save_workspace_settings },
           on_cancel: -> { patch(settings_dialog_open: false) }
         )
       end
@@ -257,7 +257,7 @@ class EditorApp < Funicular::Component
             platform_status: state[:platform_status],
             platform_log: state[:platform_log],
             platform_log_truncated: state[:platform_log_truncated],
-            selected_platform: value_of(state[:project_config], 'platform'),
+            selected_platform: value_of(state[:workspace_config], 'platform'),
             on_tab_change: ->(tab) { patch(log_tab: tab) },
             on_build_refresh: -> { refresh_build_status },
             on_platform_refresh: -> { refresh_platform_status }
@@ -1106,10 +1106,11 @@ class EditorApp < Funicular::Component
           status: '',
           status_kind: '',
           settings_dialog_open: false,
-          project_config: default_project_config
+          workspace_config: default_workspace_config
         )
         sync_textarea('')
         load_project_list
+        load_workspace_config
       elsif state[:workspace_browser]
         # ダイアログ(DirectoryBrowserDialog)経由ならダイアログ内にエラーを出す。
         patch(workspace_browser: state[:workspace_browser].merge(open_error: response.error_message))
@@ -1319,7 +1320,10 @@ class EditorApp < Funicular::Component
       path = response.ok ? value_of(response.data, 'path') : nil
       known = response.ok ? (value_of(response.data, 'known') || []) : []
       patch(workspace: path, known_workspaces: known, loading_workspace: false)
-      load_project_list if path
+      if path
+        load_project_list
+        load_workspace_config
+      end
     end
   end
 
@@ -1340,6 +1344,9 @@ class EditorApp < Funicular::Component
     end
   end
 
+  # 設定(ターゲット・VM・USB Console)はワークスペース単位なので、プロジェクトを
+  # 切り替えても変わらない(state[:workspace_config]をここでリセット・再取得
+  # したりはしない)。
   def select_project(name)
     return if name == state[:current_project]
 
@@ -1354,24 +1361,23 @@ class EditorApp < Funicular::Component
       saved_content: '',
       status: '',
       status_kind: '',
-      settings_dialog_open: false,
-      project_config: default_project_config
+      settings_dialog_open: false
     )
     # プロジェクト切り替え時は非制御の textarea もクリアしておく
     sync_textarea('')
     load_file_list(name)
     load_dir_list(name)
-    load_project_config(name)
   end
 
-  def load_project_config(name)
-    Funicular::HTTP.get("/api/projects/#{encode(name)}/config") do |response|
+  # 現在のワークスペースの設定(ターゲット・VM・USB Console)を取得する。
+  # load_workspace(起動時)・open_workspace(切り替え時)から呼ばれる。
+  def load_workspace_config
+    Funicular::HTTP.get('/api/workspace/config') do |response|
       next unless response.ok
-      next unless name == state[:current_project]
 
       data = response.data || {}
       patch(
-        project_config: {
+        workspace_config: {
           'platform' => value_of(data, 'platform'),
           'vm' => value_of(data, 'vm'),
           'usb_console' => truthy?(value_of(data, 'usb_console'))
@@ -1504,7 +1510,7 @@ class EditorApp < Funicular::Component
 
   def start_platform_setup
     return if state[:platform_building]
-    return if value_of(state[:project_config], 'platform').to_s.empty?
+    return if value_of(state[:workspace_config], 'platform').to_s.empty?
 
     patch(platform_building: true, platform_status: 'running', platform_log: '')
 
@@ -1548,12 +1554,16 @@ class EditorApp < Funicular::Component
     end
   end
 
-  # --- プロジェクト設定ダイアログ -----------------------------------------
+  # --- ワークスペース設定ダイアログ ---------------------------------------
+  # ターゲット・VM・USB Consoleはプロジェクト単位ではなくワークスペース単位の
+  # 設定(「設定はワークスペース毎に持たせてほしい」という要望により、以前の
+  # プロジェクトごとの`.config.yml`から`~/.picoride/workspace.toml`へ移行した。
+  # 詳細はserver.rb / workspace_store.rb参照)。
 
-  # 現在保存されている設定(state[:project_config])を作業用のフィールドへ
+  # 現在保存されている設定(state[:workspace_config])を作業用のフィールドへ
   # コピーしてダイアログを開く。キャンセルすれば作業用フィールドは捨てられる。
   def open_settings_dialog
-    config = state[:project_config] || {}
+    config = state[:workspace_config] || {}
     patch(
       settings_dialog_open: true,
       settings_platform: value_of(config, 'platform'),
@@ -1562,19 +1572,18 @@ class EditorApp < Funicular::Component
     )
   end
 
-  def save_project_settings
-    project = state[:current_project]
+  def save_workspace_settings
     platform = state[:settings_platform]
     vm = state[:settings_vm].to_s.empty? ? nil : state[:settings_vm]
     usb_console = state[:settings_usb_console]
 
     payload = { platform: platform, vm: vm, usb_console: usb_console }
-    Funicular::HTTP.post("/api/projects/#{encode(project)}/config", payload) do |response|
+    Funicular::HTTP.post('/api/workspace/config', payload) do |response|
       if response.ok
         patch(
           settings_dialog_open: false,
-          project_config: { 'platform' => platform, 'vm' => vm, 'usb_console' => usb_console },
-          status: 'プロジェクト設定を保存しました',
+          workspace_config: { 'platform' => platform, 'vm' => vm, 'usb_console' => usb_console },
+          status: 'ワークスペース設定を保存しました',
           status_kind: 'ok'
         )
       else
