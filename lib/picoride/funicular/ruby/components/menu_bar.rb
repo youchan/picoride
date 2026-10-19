@@ -46,8 +46,8 @@ class MenuBar < Funicular::Component
 
   def render
     div(class: 'menu-bar') do
+      span(class: 'menu-bar-title') { 'PicoRIDE' }
       render_file_menu
-      span(class: 'menu-bar-title') { 'PicoRuby ESP32 IDE' }
       render_project_select
       div(class: 'menu-bar-spacer')
       render_settings_button
