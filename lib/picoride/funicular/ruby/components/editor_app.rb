@@ -54,12 +54,9 @@ class EditorApp < Funicular::Component
 
   def initialize_state
     {
-      workspace: nil, # 開いているワークスペースの絶対パス。未設定ならnil
-      known_workspaces: [], # このセッションで一度でも開いたワークスペースの絶対パス配列
-      loading_workspace: true,
-      projects: [],
-      loading_projects: true,
-      current_project: nil,
+      project: nil, # 開いているプロジェクトの絶対パス。未設定ならnil
+      known_projects: [], # このセッションで一度でも開いたプロジェクトの絶対パス配列
+      loading_project: true,
       files: [],
       dirs: [], # プロジェクト内の(空フォルダも含む)ディレクトリ一覧。file_tree_nodes参照
       loading_files: false,
@@ -74,13 +71,12 @@ class EditorApp < Funicular::Component
       build_log_truncated: false,
       building: false,
       settings_dialog_open: false,
-      workspace_config: default_workspace_config,
+      project_config: default_project_config,
       file_menu_open: false,
       prompt_dialog: nil, # { kind:, title:, label:, placeholder:, confirm_label:, error:, context_dir: } または nil
-      open_project_dialog_open: false,
       # { path:, parent:, entries:, loading:, error:, creating:, create_error:, open_error: } または nil(閉じている)。
-      # 「ワークスペースを開く」のディレクトリブラウザ(DirectoryBrowserDialog)の状態。
-      workspace_browser: nil,
+      # 「プロジェクトを開く」のディレクトリブラウザ(DirectoryBrowserDialog)の状態。
+      project_browser: nil,
       context_menu: nil, # { kind:, path:, x:, y: } または nil。open_tree_context_menu参照
       settings_platform: nil,
       settings_vm: '',
@@ -98,12 +94,12 @@ class EditorApp < Funicular::Component
     }
   end
 
-  def default_workspace_config
+  def default_project_config
     { 'platform' => nil, 'vm' => nil, 'usb_console' => false }
   end
 
   def component_mounted
-    load_workspace
+    load_project
     setup_terminal
     watch_for_terminal_reconnect
   end
@@ -122,27 +118,22 @@ class EditorApp < Funicular::Component
 
   def render
     div(class: 'app') do
-      # 最上部のメニュー/グローバルステータスバー。ワークスペースの切り替えも
-      # ここのドロップダウンに集約している(プロジェクトの切り替えは「ファイル」>
-      # 「プロジェクトを開く…」のOpenProjectDialogに一本化。サイドバーはファイル
-      # 一覧専用)。
+      # 最上部のメニュー/グローバルステータスバー。プロジェクトの切り替えも
+      # ここのドロップダウンに集約している(サイドバーはファイル一覧専用)。
       component(MenuBar,
-        workspace: state[:workspace],
-        known_workspaces: state[:known_workspaces],
-        current_project: state[:current_project],
-        workspace_config: state[:workspace_config],
+        project: state[:project],
+        known_projects: state[:known_projects],
+        project_config: state[:project_config],
         build_status: state[:build_status],
         building: state[:building],
         platform_building: state[:platform_building],
         file_menu_open: state[:file_menu_open],
-        on_workspace_select: ->(path) { open_workspace(path) },
+        on_project_select: ->(path) { open_project(path) },
         on_settings: -> { open_settings_dialog },
         on_setup: -> { start_platform_setup },
         on_build: -> { start_build },
         on_file_menu_toggle: -> { toggle_file_menu },
-        on_open_workspace: -> { open_workspace_browser },
-        on_new_project: -> { open_new_project_dialog },
-        on_open_project: -> { open_open_project_dialog },
+        on_open_project: -> { open_project_browser },
         on_add_mrbgem: -> { open_add_mrbgem_dialog },
         on_new_file: -> { open_new_file_dialog },
         on_new_folder: -> { open_new_folder_dialog }
@@ -160,8 +151,8 @@ class EditorApp < Funicular::Component
         )
       end
 
-      if state[:workspace_browser]
-        browser = state[:workspace_browser]
+      if state[:project_browser]
+        browser = state[:project_browser]
         component(DirectoryBrowserDialog,
           path: browser[:path],
           parent: browser[:parent],
@@ -172,33 +163,24 @@ class EditorApp < Funicular::Component
           create_error: browser[:create_error],
           open_error: browser[:open_error],
           on_navigate: ->(path) { load_browse_dir(path) },
-          on_open: -> { open_workspace(browser[:path]) },
+          on_open: -> { open_project(browser[:path]) },
           on_start_create: -> { start_create_folder },
           on_confirm_create: ->(name) { confirm_create_folder(name) },
           on_cancel_create: -> { cancel_create_folder },
-          on_cancel: -> { patch(workspace_browser: nil) }
-        )
-      end
-
-      if state[:open_project_dialog_open]
-        component(OpenProjectDialog,
-          projects: state[:projects],
-          current_project: state[:current_project],
-          on_select: ->(name) { patch(open_project_dialog_open: false); select_project(name) },
-          on_cancel: -> { patch(open_project_dialog_open: false) }
+          on_cancel: -> { patch(project_browser: nil) }
         )
       end
 
       if state[:settings_dialog_open]
-        component(WorkspaceSettingsDialog,
-          workspace_path: state[:workspace],
+        component(ProjectSettingsDialog,
+          project_path: state[:project],
           platform: state[:settings_platform],
           vm: state[:settings_vm],
           usb_console: state[:settings_usb_console],
           on_platform_change: ->(platform) { patch(settings_platform: platform) },
           on_vm_change: ->(vm) { patch(settings_vm: vm) },
           on_usb_console_change: ->(enabled) { patch(settings_usb_console: enabled) },
-          on_save: -> { save_workspace_settings },
+          on_save: -> { save_project_settings },
           on_cancel: -> { patch(settings_dialog_open: false) }
         )
       end
@@ -257,7 +239,7 @@ class EditorApp < Funicular::Component
             platform_status: state[:platform_status],
             platform_log: state[:platform_log],
             platform_log_truncated: state[:platform_log_truncated],
-            selected_platform: value_of(state[:workspace_config], 'platform'),
+            selected_platform: value_of(state[:project_config], 'platform'),
             on_tab_change: ->(tab) { patch(log_tab: tab) },
             on_build_refresh: -> { refresh_build_status },
             on_platform_refresh: -> { refresh_platform_status }
@@ -347,8 +329,8 @@ class EditorApp < Funicular::Component
   # だけを持つ。
 
   def render_file_tree
-    if state[:workspace].nil?
-      div(class: 'sidebar-message') { 'ワークスペースが開かれていません。メニューバーの「ワークスペースを開く」から開いてください' }
+    if state[:project].nil?
+      div(class: 'sidebar-message') { 'プロジェクトが開かれていません。メニューバーの「プロジェクトを開く」から開いてください' }
     elsif state[:loading_files]
       div(class: 'sidebar-message') { '読み込み中…' }
     elsif state[:files].empty? && state[:dirs].empty?
@@ -693,9 +675,8 @@ class EditorApp < Funicular::Component
 
   def upload_one_terminal_file(relative_path, device_path, &done)
     append_terminal_upload_log("#{relative_path} -> #{device_path} …")
-    project = state[:current_project]
 
-    Funicular::HTTP.get("/api/file?project=#{encode(project)}&path=#{encode(relative_path)}") do |response|
+    Funicular::HTTP.get("/api/file?path=#{encode(relative_path)}") do |response|
       unless response.ok
         append_terminal_upload_log('  読み込みに失敗しました')
         done.call
@@ -869,17 +850,17 @@ class EditorApp < Funicular::Component
     end
   end
 
-  # --- ファイルメニュー(ワークスペースを開く/新規プロジェクト/プロジェクトを開く/mrbgemを追加/新規ファイル/新しいフォルダ) --
+  # --- ファイルメニュー(プロジェクトを開く/mrbgemを追加/新規ファイル/新しいフォルダ) --
 
   def toggle_file_menu
     patch(file_menu_open: !state[:file_menu_open])
   end
 
-  # 「ワークスペースを開く」ダイアログを開く。常にホームディレクトリから始める
+  # 「プロジェクトを開く」ダイアログを開く。常にホームディレクトリから始める
   # (「最初はホームディレクトリが開いている状態で」という要望)。pathを渡さずに
   # load_browse_dirを呼ぶと、サーバ側(GET /api/browse)がDir.homeへ解決する。
-  def open_workspace_browser
-    patch(file_menu_open: false, context_menu: nil, workspace_browser: {
+  def open_project_browser
+    patch(file_menu_open: false, context_menu: nil, project_browser: {
       path: nil, parent: nil, entries: [], loading: true, error: nil,
       creating: false, create_error: nil, open_error: nil
     })
@@ -890,17 +871,17 @@ class EditorApp < Funicular::Component
   # 「上へ」ボタン、いずれもこれを通る)。失敗しても現在表示中の一覧は保持し
   # (壊れたリンクで迷子にならないように)、エラーメッセージだけ出す。
   def load_browse_dir(path)
-    return unless state[:workspace_browser]
+    return unless state[:project_browser]
 
-    patch(workspace_browser: state[:workspace_browser].merge(loading: true, error: nil))
+    patch(project_browser: state[:project_browser].merge(loading: true, error: nil))
 
     query = path.to_s.empty? ? '' : "?path=#{encode(path)}"
     Funicular::HTTP.get("/api/browse#{query}") do |response|
-      next unless state[:workspace_browser]
+      next unless state[:project_browser]
 
       if response.ok
         data = response.data || {}
-        patch(workspace_browser: state[:workspace_browser].merge(
+        patch(project_browser: state[:project_browser].merge(
           path: value_of(data, 'path'),
           parent: value_of(data, 'parent'),
           entries: value_of(data, 'entries') || [],
@@ -908,37 +889,37 @@ class EditorApp < Funicular::Component
           error: nil
         ))
       else
-        patch(workspace_browser: state[:workspace_browser].merge(loading: false, error: response.error_message))
+        patch(project_browser: state[:project_browser].merge(loading: false, error: response.error_message))
       end
     end
   end
 
   def start_create_folder
-    return unless state[:workspace_browser]
-    patch(workspace_browser: state[:workspace_browser].merge(creating: true, create_error: nil))
+    return unless state[:project_browser]
+    patch(project_browser: state[:project_browser].merge(creating: true, create_error: nil))
   end
 
   def cancel_create_folder
-    return unless state[:workspace_browser]
-    patch(workspace_browser: state[:workspace_browser].merge(creating: false, create_error: nil))
+    return unless state[:project_browser]
+    patch(project_browser: state[:project_browser].merge(creating: false, create_error: nil))
   end
 
   def confirm_create_folder(name)
-    browser = state[:workspace_browser]
+    browser = state[:project_browser]
     return unless browser
 
     cleaned = name.to_s.strip
     if cleaned.empty?
-      patch(workspace_browser: browser.merge(create_error: '入力してください'))
+      patch(project_browser: browser.merge(create_error: '入力してください'))
       return
     end
 
     Funicular::HTTP.post('/api/browse', { path: browser[:path], name: cleaned }) do |response|
-      next unless state[:workspace_browser]
+      next unless state[:project_browser]
 
       if response.ok
         data = response.data || {}
-        patch(workspace_browser: state[:workspace_browser].merge(
+        patch(project_browser: state[:project_browser].merge(
           path: value_of(data, 'path'),
           parent: value_of(data, 'parent'),
           entries: value_of(data, 'entries') || [],
@@ -948,31 +929,13 @@ class EditorApp < Funicular::Component
           create_error: nil
         ))
       else
-        patch(workspace_browser: state[:workspace_browser].merge(create_error: response.error_message))
+        patch(project_browser: state[:project_browser].merge(create_error: response.error_message))
       end
     end
   end
 
-  def open_new_project_dialog
-    return if state[:workspace].nil?
-
-    patch(file_menu_open: false, context_menu: nil, prompt_dialog: {
-      kind: :new_project,
-      title: '新しいプロジェクト',
-      label: 'プロジェクト名(英数字・_・-のみ)',
-      placeholder: 'my_project',
-      confirm_label: '作成',
-      error: nil
-    })
-  end
-
-  def open_open_project_dialog
-    return if state[:workspace].nil?
-    patch(file_menu_open: false, context_menu: nil, open_project_dialog_open: true)
-  end
-
   def open_add_mrbgem_dialog
-    return if state[:current_project].nil?
+    return if state[:project].nil?
 
     patch(file_menu_open: false, context_menu: nil, prompt_dialog: {
       kind: :add_mrbgem,
@@ -991,12 +954,12 @@ class EditorApp < Funicular::Component
   # (前者は固定で'app'、後者は右クリックしたディレクトリのpath)を基準にした相対パス
   # という点は同じなので、show_new_file_dialog/show_new_folder_dialogに集約している。
   def open_new_file_dialog
-    return if state[:current_project].nil?
+    return if state[:project].nil?
     show_new_file_dialog('app')
   end
 
   def open_new_folder_dialog
-    return if state[:current_project].nil?
+    return if state[:project].nil?
     show_new_folder_dialog('app')
   end
 
@@ -1030,8 +993,7 @@ class EditorApp < Funicular::Component
   end
 
   # PromptDialogの確定ボタン(または入力欄でのEnter)から呼ばれる。
-  # kindによって新規プロジェクト/mrbgem追加/新規ファイル作成/新規フォルダ作成の
-  # どれを行うか分岐する。
+  # kindによってmrbgem追加/新規ファイル作成/新規フォルダ作成のどれを行うか分岐する。
   def handle_prompt_confirm(value)
     dialog = state[:prompt_dialog]
     return unless dialog
@@ -1043,7 +1005,6 @@ class EditorApp < Funicular::Component
     end
 
     case dialog[:kind]
-    when :new_project then create_project(name)
     when :add_mrbgem then add_mrbgem(name)
     when :new_file then create_file(to_full_path(dialog[:context_dir], name))
     when :new_folder then create_folder(to_full_path(dialog[:context_dir], name))
@@ -1072,33 +1033,30 @@ class EditorApp < Funicular::Component
     patch(prompt_dialog: dialog.merge(error: (message && !message.empty?) ? message : '失敗しました'))
   end
 
-  # ワークスペースを開く(新規にダイアログから指定した場合も、メニューバーの
-  # ドロップダウンでknown_workspacesの中から切り替えた場合も、どちらもこれを通る)。
-  # 既に開いているワークスペースを選び直した場合は何もしない。
+  # プロジェクトを開く(新規にダイアログから指定した場合も、メニューバーの
+  # ドロップダウンでknown_projectsの中から切り替えた場合も、どちらもこれを通る)。
+  # 既に開いているプロジェクトを選び直した場合は何もしない。
   #
-  # 切り替え前のプロジェクト/ファイル関連のstateは全部そのワークスペースに
-  # 属さないものなので、select_projectと同じく作業中の編集状態(textareaの
-  # 内容含む)をクリアしてから、新しいワークスペースのプロジェクト一覧を取り直す。
-  def open_workspace(path)
-    if path == state[:workspace]
-      # 既に開いているワークスペースをブラウザ経由で選び直した場合は、
+  # 切り替え前のファイル関連のstateは全部そのプロジェクトに属さないものなので、
+  # 作業中の編集状態(textareaの内容含む)をクリアしてから、新しいプロジェクトの
+  # ファイル一覧・設定を取り直す。
+  def open_project(path)
+    if path == state[:project]
+      # 既に開いているプロジェクトをブラウザ経由で選び直した場合は、
       # 何もせずダイアログだけ閉じる(ドロップダウン経由なら元々何もしない)。
-      patch(workspace_browser: nil) if state[:workspace_browser]
+      patch(project_browser: nil) if state[:project_browser]
       return
     end
 
-    Funicular::HTTP.post('/api/workspace', { path: path }) do |response|
+    Funicular::HTTP.post('/api/project', { path: path }) do |response|
       if response.ok
         patch(
-          workspace_browser: nil,
-          workspace: value_of(response.data, 'path'),
-          known_workspaces: value_of(response.data, 'known') || [],
-          projects: [],
-          loading_projects: true,
-          current_project: nil,
+          project_browser: nil,
+          project: value_of(response.data, 'path'),
+          known_projects: value_of(response.data, 'known') || [],
           files: [],
           dirs: [],
-          loading_files: false,
+          loading_files: true,
           collapsed_dirs: [],
           current_path: nil,
           content: '',
@@ -1106,40 +1064,28 @@ class EditorApp < Funicular::Component
           status: '',
           status_kind: '',
           settings_dialog_open: false,
-          workspace_config: default_workspace_config
+          project_config: default_project_config
         )
         sync_textarea('')
-        load_project_list
-        load_workspace_config
-      elsif state[:workspace_browser]
+        load_file_list
+        load_dir_list
+        load_project_config
+      elsif state[:project_browser]
         # ダイアログ(DirectoryBrowserDialog)経由ならダイアログ内にエラーを出す。
-        patch(workspace_browser: state[:workspace_browser].merge(open_error: response.error_message))
+        patch(project_browser: state[:project_browser].merge(open_error: response.error_message))
       else
         # ドロップダウンでの切り替え(ダイアログを経由しない)はトップレベルの
-        # ステータス表示でエラーを伝える(load_project_list失敗時と同じパターン)。
-        patch(status: 'ワークスペースを開けませんでした', status_kind: 'error')
-      end
-    end
-  end
-
-  def create_project(name)
-    Funicular::HTTP.post('/api/projects', { name: name }) do |response|
-      if response.ok
-        patch(prompt_dialog: nil)
-        load_project_list
-        select_project(name)
-      else
-        prompt_dialog_error(response.error_message)
+        # ステータス表示でエラーを伝える。
+        patch(status: 'プロジェクトを開けませんでした', status_kind: 'error')
       end
     end
   end
 
   def add_mrbgem(name)
-    project = state[:current_project]
-    Funicular::HTTP.post("/api/projects/#{encode(project)}/mrbgems", { name: name }) do |response|
+    Funicular::HTTP.post('/api/mrbgems', { name: name }) do |response|
       if response.ok
         patch(prompt_dialog: nil, status: 'mrbgemを追加しました', status_kind: 'ok')
-        load_file_list(project)
+        load_file_list
       else
         prompt_dialog_error(response.error_message)
       end
@@ -1147,12 +1093,11 @@ class EditorApp < Funicular::Component
   end
 
   def create_file(path)
-    project = state[:current_project]
-    Funicular::HTTP.post("/api/projects/#{encode(project)}/files", { path: path }) do |response|
+    Funicular::HTTP.post('/api/files', { path: path }) do |response|
       if response.ok
         patch(prompt_dialog: nil, status: 'ファイルを作成しました', status_kind: 'ok')
-        load_file_list(project)
-        load_dir_list(project) # ネストしたパスなら中間フォルダも新しくできているため
+        load_file_list
+        load_dir_list # ネストしたパスなら中間フォルダも新しくできているため
         open_file(path)
       else
         prompt_dialog_error(response.error_message)
@@ -1161,11 +1106,10 @@ class EditorApp < Funicular::Component
   end
 
   def create_folder(path)
-    project = state[:current_project]
-    Funicular::HTTP.post("/api/projects/#{encode(project)}/folders", { path: path }) do |response|
+    Funicular::HTTP.post('/api/folders', { path: path }) do |response|
       if response.ok
         patch(prompt_dialog: nil, status: 'フォルダを作成しました', status_kind: 'ok')
-        load_dir_list(project)
+        load_dir_list
       else
         prompt_dialog_error(response.error_message)
       end
@@ -1264,13 +1208,12 @@ class EditorApp < Funicular::Component
   end
 
   def delete_file(path)
-    project = state[:current_project]
-    Funicular::HTTP.delete("/api/projects/#{encode(project)}/files?path=#{encode(path)}") do |response|
+    Funicular::HTTP.delete("/api/files?path=#{encode(path)}") do |response|
       if response.ok
         patch(status: 'ファイルを削除しました', status_kind: 'ok')
         close_open_file if state[:current_path] == path
-        load_file_list(project)
-        load_dir_list(project)
+        load_file_list
+        load_dir_list
       else
         message = response.error_message
         patch(status: (message && !message.empty?) ? message : '削除に失敗しました', status_kind: 'error')
@@ -1279,13 +1222,12 @@ class EditorApp < Funicular::Component
   end
 
   def delete_folder(path)
-    project = state[:current_project]
-    Funicular::HTTP.delete("/api/projects/#{encode(project)}/folders?path=#{encode(path)}") do |response|
+    Funicular::HTTP.delete("/api/folders?path=#{encode(path)}") do |response|
       if response.ok
         patch(status: 'フォルダを削除しました', status_kind: 'ok')
         close_open_file if current_path_under?(path)
-        load_file_list(project)
-        load_dir_list(project)
+        load_file_list
+        load_dir_list
       else
         message = response.error_message
         patch(status: (message && !message.empty?) ? message : '削除に失敗しました', status_kind: 'error')
@@ -1309,75 +1251,33 @@ class EditorApp < Funicular::Component
   # --- サーバとのやりとり ----------------------------------------------
 
   # 起動時にサーバが(同じプロセスのまま前のブラウザセッションなどで)既に
-  # ワークスペースを開いているかどうか・これまでに開いたワークスペース一覧
-  # (known_workspaces、メニューバーのドロップダウンの選択肢)を確認する。
-  # 以前はここでワークスペース未設定ならダイアログを自動表示していたが、
-  # 「それはやめてほしい」というフィードバックを受けて廃止した。未設定の間は
-  # メニューバーのドロップダウンが「ワークスペースを開く」ボタンとして
-  # 表示される(menu_bar.rb参照)ので、ユーザーがそれを押すまで何もしない。
-  def load_workspace
-    Funicular::HTTP.get('/api/workspace') do |response|
+  # プロジェクトを開いているかどうか・これまでに開いたプロジェクト一覧
+  # (known_projects、メニューバーのドロップダウンの選択肢)を確認する。
+  # 未設定の間はメニューバーのドロップダウンが「プロジェクトを開く」ボタンとして
+  # 表示される(menu_bar.rb参照)ので、ユーザーがそれを押すまで何もしない
+  # (自動でダイアログを表示したりはしない)。
+  def load_project
+    Funicular::HTTP.get('/api/project') do |response|
       path = response.ok ? value_of(response.data, 'path') : nil
       known = response.ok ? (value_of(response.data, 'known') || []) : []
-      patch(workspace: path, known_workspaces: known, loading_workspace: false)
+      patch(project: path, known_projects: known, loading_project: false)
       if path
-        load_project_list
-        load_workspace_config
+        load_file_list
+        load_dir_list
+        load_project_config
       end
     end
   end
 
-  def load_project_list
-    Funicular::HTTP.get('/api/projects') do |response|
-      if response.ok
-        projects = response.data || []
-        patch(projects: projects, loading_projects: false)
-        select_project(projects.first.to_s) if state[:current_project].nil? && !projects.empty?
-      else
-        patch(
-          projects: [],
-          loading_projects: false,
-          status: 'プロジェクト一覧の取得に失敗しました',
-          status_kind: 'error'
-        )
-      end
-    end
-  end
-
-  # 設定(ターゲット・VM・USB Console)はワークスペース単位なので、プロジェクトを
-  # 切り替えても変わらない(state[:workspace_config]をここでリセット・再取得
-  # したりはしない)。
-  def select_project(name)
-    return if name == state[:current_project]
-
-    patch(
-      current_project: name,
-      files: [],
-      dirs: [],
-      loading_files: true,
-      collapsed_dirs: [],
-      current_path: nil,
-      content: '',
-      saved_content: '',
-      status: '',
-      status_kind: '',
-      settings_dialog_open: false
-    )
-    # プロジェクト切り替え時は非制御の textarea もクリアしておく
-    sync_textarea('')
-    load_file_list(name)
-    load_dir_list(name)
-  end
-
-  # 現在のワークスペースの設定(ターゲット・VM・USB Console)を取得する。
-  # load_workspace(起動時)・open_workspace(切り替え時)から呼ばれる。
-  def load_workspace_config
-    Funicular::HTTP.get('/api/workspace/config') do |response|
+  # 現在のプロジェクトの設定(ターゲット・VM・USB Console)を取得する。
+  # load_project(起動時)・open_project(切り替え時)から呼ばれる。
+  def load_project_config
+    Funicular::HTTP.get('/api/project/config') do |response|
       next unless response.ok
 
       data = response.data || {}
       patch(
-        workspace_config: {
+        project_config: {
           'platform' => value_of(data, 'platform'),
           'vm' => value_of(data, 'vm'),
           'usb_console' => truthy?(value_of(data, 'usb_console'))
@@ -1386,8 +1286,8 @@ class EditorApp < Funicular::Component
     end
   end
 
-  def load_file_list(project)
-    Funicular::HTTP.get("/api/files?project=#{encode(project)}") do |response|
+  def load_file_list
+    Funicular::HTTP.get('/api/files') do |response|
       if response.ok
         patch(files: response.data || [], loading_files: false)
       else
@@ -1403,8 +1303,8 @@ class EditorApp < Funicular::Component
 
   # 空フォルダもツリーに表示するための、ファイル一覧とは別のディレクトリ一覧取得。
   # file_tree_nodes参照。
-  def load_dir_list(project)
-    Funicular::HTTP.get("/api/dirs?project=#{encode(project)}") do |response|
+  def load_dir_list
+    Funicular::HTTP.get('/api/dirs') do |response|
       patch(dirs: response.data || []) if response.ok
     end
   end
@@ -1413,9 +1313,8 @@ class EditorApp < Funicular::Component
     return if path == state[:current_path]
 
     patch(status: '読み込み中…', status_kind: '')
-    project = state[:current_project]
 
-    Funicular::HTTP.get("/api/file?project=#{encode(project)}&path=#{encode(path)}") do |response|
+    Funicular::HTTP.get("/api/file?path=#{encode(path)}") do |response|
       if response.ok
         content = value_of(response.data, 'content').to_s
         patch(
@@ -1441,7 +1340,7 @@ class EditorApp < Funicular::Component
     # 送信時点の内容を控えておく(レスポンスが返る頃には編集が進んでいる可能性がある)
     sending = state[:content]
 
-    Funicular::HTTP.post('/api/file', { project: state[:current_project], path: path, content: sending }) do |response|
+    Funicular::HTTP.post('/api/file', { path: path, content: sending }) do |response|
       if response.ok
         patch(saved_content: sending, status: '保存しました', status_kind: 'ok')
       else
@@ -1459,8 +1358,7 @@ class EditorApp < Funicular::Component
 
     patch(building: true, build_status: 'running', build_log: '')
 
-    payload = { project: state[:current_project] }
-    Funicular::HTTP.post('/api/build', payload) do |response|
+    Funicular::HTTP.post('/api/build', {}) do |response|
       if response.ok
         schedule_build_poll
       else
@@ -1510,11 +1408,11 @@ class EditorApp < Funicular::Component
 
   def start_platform_setup
     return if state[:platform_building]
-    return if value_of(state[:workspace_config], 'platform').to_s.empty?
+    return if value_of(state[:project_config], 'platform').to_s.empty?
 
     patch(platform_building: true, platform_status: 'running', platform_log: '')
 
-    Funicular::HTTP.post('/api/platform', { project: state[:current_project] }) do |response|
+    Funicular::HTTP.post('/api/platform', {}) do |response|
       if response.ok
         schedule_platform_poll
       else
@@ -1554,16 +1452,14 @@ class EditorApp < Funicular::Component
     end
   end
 
-  # --- ワークスペース設定ダイアログ ---------------------------------------
-  # ターゲット・VM・USB Consoleはプロジェクト単位ではなくワークスペース単位の
-  # 設定(「設定はワークスペース毎に持たせてほしい」という要望により、以前の
-  # プロジェクトごとの`.config.yml`から`~/.picoride/workspace.toml`へ移行した。
-  # 詳細はserver.rb / workspace_store.rb参照)。
+  # --- プロジェクト設定ダイアログ -----------------------------------------
+  # ターゲット・VM・USB Consoleは`~/.picoride/project.toml`(server.rb /
+  # project_store.rb参照)に永続化しているプロジェクト単位の設定。
 
-  # 現在保存されている設定(state[:workspace_config])を作業用のフィールドへ
+  # 現在保存されている設定(state[:project_config])を作業用のフィールドへ
   # コピーしてダイアログを開く。キャンセルすれば作業用フィールドは捨てられる。
   def open_settings_dialog
-    config = state[:workspace_config] || {}
+    config = state[:project_config] || {}
     patch(
       settings_dialog_open: true,
       settings_platform: value_of(config, 'platform'),
@@ -1572,18 +1468,18 @@ class EditorApp < Funicular::Component
     )
   end
 
-  def save_workspace_settings
+  def save_project_settings
     platform = state[:settings_platform]
     vm = state[:settings_vm].to_s.empty? ? nil : state[:settings_vm]
     usb_console = state[:settings_usb_console]
 
     payload = { platform: platform, vm: vm, usb_console: usb_console }
-    Funicular::HTTP.post('/api/workspace/config', payload) do |response|
+    Funicular::HTTP.post('/api/project/config', payload) do |response|
       if response.ok
         patch(
           settings_dialog_open: false,
-          workspace_config: { 'platform' => platform, 'vm' => vm, 'usb_console' => usb_console },
-          status: 'ワークスペース設定を保存しました',
+          project_config: { 'platform' => platform, 'vm' => vm, 'usb_console' => usb_console },
+          status: 'プロジェクト設定を保存しました',
           status_kind: 'ok'
         )
       else

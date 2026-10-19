@@ -1312,3 +1312,71 @@ path = "絶対パス"
   `workspace.toml`の中身を確認→プロセスを再起動→ブラウザで設定が復元されて
   いることを確認→別のプロジェクトに切り替えても設定(セットアップボタンの
   ターゲット表示)が変わらないことを確認、まで一通り検証した
+
+### 続き5: 「ワークスペース」=「プロジェクト」だったので2階層構成を1階層に統合
+
+続き1〜4までの一連の変更は、「プロジェクトを束ねる"ワークスペース"ディレクトリを
+UIから開き、その配下の複数プロジェクトから1つを選ぶ」という2階層構成を前提に
+進めていた。しかしこれは実際にはユーザーの頭の中にあったモデルと食い違っていて、
+「ワークスペース=プロジェクトだった(2階層ではなく1階層でよかった)」という
+フィードバックを受け、2階層構成を1階層に統合する大きめのリファクタリングを行った。
+
+**変更の性質**: このフィードバックに従うと「ワークスペース」と(従来の)
+「プロジェクト」が同じものを指すことになり、名前が衝突する。衝突の解消方法が
+2通り考えられた(1階層に統合する/単に呼び方だけ"プロジェクト"に揃えて2階層構造は
+維持する)ため、作業前にユーザーに確認し、「1ディレクトリ=1プロジェクトに統合」を
+選んでもらった。大きな構造変更は実装前にユーザーに選択肢を示して確認するのが安全、
+という教訓(このセッションで既に複数回、作ってから「勘違いだった」という
+やり取りが発生していたこともあり)。
+
+**やったこと**(ほぼ全ファイルに影響する全面的なリネーム+簡略化):
+
+- サーバ側の中心的な状態を`workspace_root`/`known_workspaces`/`workspace_settings`
+  から`Server.project_root`(単一のアクティブなプロジェクトの絶対パス)/
+  `known_projects`/`project_settings`に改名。`project_root(name)`という
+  「ワークスペース配下のサブディレクトリ名を解決する」メソッドは消え、
+  `project_root`は常に単一の値を返すアクセサになった
+- `GET /api/projects`(サブプロジェクト一覧)・`POST /api/projects`
+  (ワークスペース配下に名前でサブディレクトリを作る「新しいプロジェクト」)を
+  丸ごと削除した。これに伴い、プロジェクト名を受け取っていた全エンドポイント
+  (`GET /api/files`・`GET /api/dirs`・`GET/POST /api/file`・
+  `POST/DELETE /api/projects/:name/files`・`POST/DELETE /api/projects/:name/folders`・
+  `POST /api/projects/:name/mrbgems`・`POST /api/build`・`POST /api/platform`・
+  `GET /api/firmware/*`)から`project`パラメータ/`:name`セグメントを削除し、
+  常に`project_root`(現在開いている唯一のプロジェクト)を対象にするよう
+  簡略化した(`POST /api/files`・`POST /api/folders`・`POST /api/mrbgems`の
+  ようにパスからプロジェクト名セグメントが消えた)
+- 「新しいプロジェクト」(名前を入力してワークスペース配下にサブディレクトリを
+  作る機能)は、`ensure_project_scaffold`に置き換えた:
+  `POST /api/project`(プロジェクトを開く)のたびに、`app/app.rb`・
+  `build_config.rb`が無ければ空で作成する(既存ファイルは上書きしない)。
+  「新しいプロジェクトを作る」という操作は、実質的に
+  DirectoryBrowserDialogで「新しいフォルダ」を作ってそのまま「このディレクトリを
+  開く」ことと同じになった(開いた瞬間に雛形が用意される)ので、専用のダイアログ・
+  エンドポイントが丸ごと不要になった
+- `~/.picoride/workspace.toml`(`WorkspaceStore`)を`~/.picoride/project.toml`
+  (`Picoride::ProjectStore`、`lib/picoride/project_store.rb`)に改名した
+  (旧workspace.tomlからの自動移行は行わない。クリーンな置き換え)
+- フロント側: `WorkspaceSettingsDialog`を`ProjectSettingsDialog`に戻し(名前が
+  一周して元に戻った形)、`OpenProjectDialog`(サブプロジェクト一覧から選ぶ
+  ダイアログ)は丸ごと削除した。`MenuBar`の常設ドロップダウンは
+  「ワークスペース選択」から「プロジェクト選択」に意味が戻り、
+  `current_project`という概念(ワークスペース配下で選択中のサブプロジェクト名)は
+  消えて、`project`(開いているプロジェクトの絶対パス)1つに統合された。
+  `EditorApp`の`select_project`(サブプロジェクト切り替え)・`load_project_list`
+  (サブプロジェクト一覧取得)は削除し、`load_workspace`/`open_workspace`は
+  それぞれ`load_project`/`open_project`に改名して、ファイル一覧・設定の取得も
+  このタイミングで直接行うようにした(以前は「ワークスペースを開く→サブ
+  プロジェクト一覧取得→最初の1件を自動選択→ファイル一覧取得」という2段階
+  だったのが、「プロジェクトを開く→ファイル一覧取得」の1段階になった)
+- `DirectoryBrowserDialog`・`project_label`(旧`workspace_label`)等、
+  「ワークスペースを開く」という文言だった箇所は全部「プロジェクトを開く」に
+  変更。コンポーネント自体は元々汎用設計だったため、ロジックの変更は不要で
+  文言とprops名(`workspace_path`→`project_path`等)の変更だけで済んだ
+- 実際に`bundle exec exe/picoride`で検証: `POST /api/project`で初めて開いた
+  空ディレクトリに`app/app.rb`・`build_config.rb`が自動生成されること、
+  既存プロジェクト(`projects/hello_world_project`)をディレクトリブラウザで
+  辿って開けること、ファイル一覧・ファイル保存・新規ファイル・mrbgem追加・
+  設定の読み書きが全部`project`パラメータ無しで動くこと、プロセス再起動後に
+  `project.toml`から同じプロジェクトが開かれた状態で起動すること、をブラウザと
+  curl両方で一通り確認した

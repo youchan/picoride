@@ -23,10 +23,11 @@ docker build -t picoride-builder .
 ./bin/server
 ```
 
-Open http://localhost:4567 . On first load, open a workspace via File > Open
-Workspace and enter the absolute path to a directory on disk that will hold
-your projects (sub-folders, each with an `app/`). This isn't persisted across
-server restarts — you'll open it again next time.
+Open http://localhost:4567 . On first load, open a project via File > Open
+Project (or the dropdown in the menu bar) and browse to, or create, a
+directory on disk — it gets an `app/` and `build_config.rb` automatically.
+Opened projects are remembered in `~/.picoride/project.toml`, so the last one
+you had open reopens automatically on the next server start.
 
 ## Troubleshooting
 

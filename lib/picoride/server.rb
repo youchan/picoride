@@ -8,7 +8,7 @@ require "fileutils"
 require "uri"
 require_relative "background_job"
 require_relative "r2p2_state"
-require_relative "workspace_store"
+require_relative "project_store"
 
 module Picoride
   class Server < Sinatra::Base
@@ -29,37 +29,39 @@ module Picoride
       end
     end
 
-    # プロジェクトを置く場所(= ワークスペース)。固定ディレクトリ・環境変数での
-    # 既定値は持たず、UI(メニューバーのワークスペース切り替えドロップダウン、
-    # または「ファイル」>「ワークスペースを開く」)から都度ユーザーが指定して
-    # 開く方式にしてある。以前は`__dir__`からの相対パス(`../projects`)を
-    # 既定値にしていたが、gemとして配布する構成に変更した際(`lib/`配下への
-    # 移動)この相対パスの基点がズレて実際には存在しないパスを指すようになって
-    # いた(「プロジェクトディレクトリがない」エラーの原因)。環境変数で
-    # 上書きする運用に頼る限り同種の問題が再発しうるため、暗黙の既定値自体を
-    # 無くしてユーザーが明示的に開く設計にした。
+    # 編集対象のプロジェクト(app/・mrbgems/・build_config.rbを持つディレクトリ)。
+    # 固定ディレクトリ・環境変数での既定値は持たず、UI(メニューバーのプロジェクト
+    # 切り替えドロップダウン、または「ファイル」>「プロジェクトを開く」)から
+    # 都度ユーザーが指定して開く方式にしてある(「よくあるファイルビューアの
+    # ような見た目でディレクトリを探せるように」という要望でDirectoryBrowserDialog
+    # 経由になっている)。
     #
-    # workspace_rootは「現在アクティブな」1つだけを指す。known_workspacesは
-    # 一度でも開いたワークスペースの絶対パスを開いた順に積んだ配列で、
-    # メニューバーのドロップダウンの選択肢になる(「ワークスペースは複数開けて、
-    # ドロップダウンで切り替えたい」という要望)。
+    # 以前は「プロジェクトを束ねる"ワークスペース"ディレクトリを開き、その配下の
+    # 複数プロジェクトから1つを選ぶ」という2階層構成だった(workspace_root +
+    # project_root(name)で解決)。しかし「ワークスペース=プロジェクトだった」
+    # というフィードバックにより、2階層は不要と判明し1階層に統合した: ここで
+    # 開く・切り替えるディレクトリがそのままプロジェクト本体(project_root)になる。
     #
-    # workspace_settingsは絶対パス(known_workspacesの要素)をキーに、そのワーク
-    # スペースのターゲット・VM・USB Console設定を持つHash(詳細は下の「ワーク
-    # スペース設定」の節参照。「設定はプロジェクトではなくワークスペース単位で
-    # 持たせてほしい」という要望で、プロジェクトごとの`.config.yml`から移した)。
+    # project_rootは「現在アクティブな」1つだけを指す。known_projectsは
+    # 一度でも開いたプロジェクトの絶対パスを開いた順に積んだ配列で、
+    # メニューバーのドロップダウンの選択肢になる(複数プロジェクトを開いておいて
+    # ドロップダウンで切り替えたい、という要望)。
     #
-    # これら3つはいずれも`~/.picoride/workspace.toml`(WorkspaceStore)に
-    # 永続化する(「一度開いたら覚えておいてほしい、再起動しても開かれた状態で
-    # 起動してほしい」という要望)。起動時にここで一度読み込んで初期値にし、
-    # 変更するたびに書き戻す(WorkspaceStore.save参照)。
+    # project_settingsは絶対パス(known_projectsの要素)をキーに、そのプロジェクトの
+    # ターゲット・VM・USB Console設定を持つHash(詳細は下の「プロジェクト設定」の
+    # 節参照)。
+    #
+    # これら3つはいずれも`~/.picoride/project.toml`(ProjectStore)に永続化する
+    # (一度開いたら覚えておいてほしい、再起動しても開かれた状態で起動してほしい、
+    # という要望)。起動時にここで一度読み込んで初期値にし、変更するたびに
+    # 書き戻す(ProjectStore.save参照)。
     class << self
-      attr_accessor :workspace_root, :known_workspaces, :workspace_settings
+      attr_accessor :project_root, :known_projects, :project_settings
     end
-    loaded_workspaces = WorkspaceStore.load
-    self.known_workspaces = loaded_workspaces[:paths]
-    self.workspace_root = loaded_workspaces[:active]
-    self.workspace_settings = loaded_workspaces[:settings]
+    loaded_projects = ProjectStore.load
+    self.known_projects = loaded_projects[:paths]
+    self.project_root = loaded_projects[:active]
+    self.project_settings = loaded_projects[:settings]
 
     FUNICULAR_ROOT = File.expand_path("funicular", __dir__)
 
@@ -84,15 +86,13 @@ module Picoride
     ALLOWED_EXTENSIONS = %w[.rb .c .h .rake].freeze
     PLATFORM_TARGETS = %w[esp32 esp32c3 esp32c6 esp32h2 esp32p4 esp32s3].freeze
 
-    # 新規プロジェクト名・mrbgem名として許可する文字種。ディレクトリ名として
-    # そのまま使うので、パストラバーサルや意図しない特殊文字を避けるため
-    # 英数字・アンダースコア・ハイフンのみに絞ってある。
-    PROJECT_NAME_PATTERN = /\A[A-Za-z0-9_-]+\z/.freeze
+    # mrbgem名として許可する文字種。ディレクトリ名としてそのまま使うので、
+    # パストラバーサルや意図しない特殊文字を避けるため英数字・アンダースコア・
+    # ハイフンのみに絞ってある。
+    MRBGEM_NAME_PATTERN = /\A[A-Za-z0-9_-]+\z/.freeze
 
-    # 1プロジェクト = projects/<name>/ の中に app/・mrbgems/・build_config.rb を
-    # まとめて持つディレクトリ、という単位にしてある(app/mrbgemsをprojects直下に
-    # 並べて種別を自動判定する方式から変更。1つのアプリと、それが使う自作mrbgem群を
-    # 1プロジェクトとして丸ごと持ち歩けるように)。
+    # 1プロジェクト = app/・mrbgems/・build_config.rbをまとめて持つディレクトリ、
+    # という単位にしてある。
     APP_DIRNAME = "app"
     MRBGEMS_DIRNAME = "mrbgems"
 
@@ -117,40 +117,23 @@ module Picoride
     PLATFORM_JOB = BackgroundJob.new
 
     helpers do
-      def workspace_root
-        self.class.workspace_root
+      def project_root
+        self.class.project_root
       end
 
-      def known_workspaces
-        self.class.known_workspaces
+      def known_projects
+        self.class.known_projects
       end
 
-      def workspace_settings
-        self.class.workspace_settings
+      def project_settings
+        self.class.project_settings
       end
 
-      # 現在のワークスペース(workspace_root)の設定。未保存(そのワークスペースを
+      # 現在のプロジェクト(project_root)の設定。未保存(そのプロジェクトを
       # 一度も設定したことがない)なら「何も設定されていない」扱い
       # (platform/vmはnil、usb_consoleはfalse)にする。
-      def read_workspace_config
-        workspace_settings[workspace_root] || { "platform" => nil, "vm" => nil, "usb_console" => false }
-      end
-
-      def available_projects
-        Dir.children(workspace_root).select { |name| File.directory?(File.join(workspace_root, name)) }.sort
-      end
-
-      # プロジェクト名をパストラバーサル対策しつつ絶対パスに変換する。
-      # workspace_rootが未設定の場合はここに来る前にbeforeフィルタ
-      # (require_workspace!)で弾かれている前提。
-      def project_root(name)
-        raise ArgumentError, "invalid project" if name.include?(File::SEPARATOR) || name.include?("..")
-
-        full = File.expand_path(File.join(workspace_root, name))
-        root_with_sep = workspace_root + File::SEPARATOR
-        raise ArgumentError, "invalid project" unless full.start_with?(root_with_sep) && File.directory?(full)
-
-        full
+      def read_project_config
+        project_settings[project_root] || { "platform" => nil, "vm" => nil, "usb_console" => false }
       end
 
       # path traversal (../ などによる範囲外アクセス) を防ぎつつ絶対パスに変換する
@@ -163,8 +146,7 @@ module Picoride
         full
       end
 
-      # プロジェクトごとのR2P2-ESP32状態ディレクトリの絶対パス。
-      # root は project_root で解決済みのプロジェクト本体の絶対パスを渡すこと。
+      # プロジェクトのR2P2-ESP32状態ディレクトリの絶対パス。
       def r2p2_state_dir(root)
         File.join(root, R2P2_STATE_DIRNAME)
       end
@@ -187,12 +169,28 @@ module Picoride
         end
       end
 
+      # 新しく開いた(あるいは初めて開く)プロジェクトに、起動スクリプトの土台
+      # (app/app.rb)とビルド設定ファイル(build_config.rb)が無ければ空で
+      # 用意しておく。既存ファイルは上書きしない(非破壊)。以前の「新しい
+      # プロジェクト」(ワークスペース配下に名前でサブディレクトリを作る機能)が
+      # 担っていた雛形作成を、「プロジェクトを開く」(DirectoryBrowserDialogで
+      # 任意のディレクトリを指定・新規フォルダ作成して開く)に統合したもの。
+      def ensure_project_scaffold(root)
+        app_dir = File.join(root, APP_DIRNAME)
+        FileUtils.mkdir_p(app_dir)
+        app_file = File.join(app_dir, "app.rb")
+        File.write(app_file, "") unless File.exist?(app_file)
+
+        build_config_path = File.join(root, BUILD_CONFIG_FILENAME)
+        File.write(build_config_path, "") unless File.exist?(build_config_path)
+      end
+
       def json_error(status, message)
         halt status, { error: message }.to_json
       end
 
       def valid_name?(name)
-        name.is_a?(String) && PROJECT_NAME_PATTERN.match?(name)
+        name.is_a?(String) && MRBGEM_NAME_PATTERN.match?(name)
       end
 
       # 新規ファイル/フォルダの作成・削除で使う相対パスのチェック。safe_pathの
@@ -218,11 +216,11 @@ module Picoride
       end
     end
 
-    # ワークスペースが開かれていなくても使える/api/*(ワークスペース自体を
-    # 開くためのエンドポイント群)。残りの/api/*はワークスペース(workspace_root)が
-    # 開かれていないと処理できない(project_rootがworkspace_root前提のため)ので、
-    # ここで先に弾いておくことで、各ルートで個別にnilチェックを書かずに済む。
-    WORKSPACE_EXEMPT_API_PATHS = ["/api/workspace", "/api/browse"].freeze
+    # プロジェクトが開かれていなくても使える/api/*(プロジェクト自体を開くための
+    # エンドポイント群)。残りの/api/*はプロジェクト(project_root)が開かれていないと
+    # 処理できないので、ここで先に弾いておくことで、各ルートで個別にnilチェックを
+    # 書かずに済む。
+    PROJECT_EXEMPT_API_PATHS = ["/api/project", "/api/browse"].freeze
 
     # パターン付きbefore(例: `before %r{...}`)にすると、Sinatraがそのパターンを
     # ルーティングエンジン(Mustermann)でコンパイルしようとする。Mustermannは
@@ -233,10 +231,10 @@ module Picoride
     # パスを判定する。
     before do
       next unless request.path_info.start_with?("/api/") &&
-                  !WORKSPACE_EXEMPT_API_PATHS.include?(request.path_info)
+                  !PROJECT_EXEMPT_API_PATHS.include?(request.path_info)
 
       content_type :json
-      json_error(400, "workspace is not open") unless workspace_root
+      json_error(400, "project is not open") unless project_root
     end
 
     get "/" do
@@ -255,20 +253,21 @@ module Picoride
       File.read(full)
     end
 
-    # 現在開いているワークスペース(絶対パス、未設定ならnull)と、このセッションで
-    # 一度でも開いたワークスペースの一覧(known、メニューバーのドロップダウンの
+    # 現在開いているプロジェクト(絶対パス、未設定ならnull)と、このセッションで
+    # 一度でも開いたプロジェクトの一覧(known、メニューバーのドロップダウンの
     # 選択肢)を返す。before フィルタの対象外にしてある唯一の/api/*エンドポイント。
-    get "/api/workspace" do
+    get "/api/project" do
       content_type :json
-      { path: workspace_root, known: known_workspaces }.to_json
+      { path: project_root, known: known_projects }.to_json
     end
 
-    # ワークスペースを開く(新規に指定した場合)、または既にknown_workspacesに
+    # プロジェクトを開く(新規に指定した場合)、または既にknown_projectsに
     # あるものへ切り替える(どちらも同じエンドポイントで、違いは渡されたpathが
     # 既知かどうかだけ)。body(JSON): { path: "/abs/path/to/dir" }。
-    # 既存の(あるいはこれから使う)ディレクトリを指定するだけで、ここでは
-    # 作成はしない(作成は「新しいプロジェクト」がワークスペース配下に行う)。
-    post "/api/workspace" do
+    # 既存の(あるいはこれから使う)ディレクトリを指定するだけで良く、空の
+    # ディレクトリであってもensure_project_scaffoldが起動スクリプトの土台を
+    # 用意する。
+    post "/api/project" do
       content_type :json
 
       payload =
@@ -284,22 +283,24 @@ module Picoride
       full = File.expand_path(path)
       json_error(400, "directory does not exist") unless File.directory?(full)
 
-      self.class.workspace_root = full
-      self.class.known_workspaces << full unless known_workspaces.include?(full)
-      WorkspaceStore.save(active: workspace_root, paths: known_workspaces, settings: workspace_settings)
+      ensure_project_scaffold(full)
 
-      { status: "ok", path: full, known: known_workspaces }.to_json
+      self.class.project_root = full
+      self.class.known_projects << full unless known_projects.include?(full)
+      ProjectStore.save(active: project_root, paths: known_projects, settings: project_settings)
+
+      { status: "ok", path: full, known: known_projects }.to_json
     end
 
-    # --- ディレクトリブラウザ(「ワークスペースを開く」のフォルダ選択UI) -------
+    # --- ディレクトリブラウザ(「プロジェクトを開く」のフォルダ選択UI) ---------
     #
-    # ワークスペースの絶対パスを一行のテキストで入力させる代わりに、「よくある
+    # プロジェクトの絶対パスを一行のテキストで入力させる代わりに、「よくある
     # ファイルビューア」のようにディレクトリを辿って選べるようにするためのAPI。
-    # ワークスペース自体をまだ選んでいない状態でも使える必要がある(これを
-    # 使ってワークスペースを選ぶため)ので、WORKSPACE_EXEMPT_API_PATHSに
-    # /api/browse を含めてある。GET /api/files等(ワークスペース配下の対象拡張子の
+    # プロジェクト自体をまだ開いていない状態でも使える必要がある(これを使って
+    # プロジェクトを開くため)ので、PROJECT_EXEMPT_API_PATHSに/api/browseを
+    # 含めてある。GET /api/files等(開いているプロジェクト内の対象拡張子の
     # ファイル一覧)とは別物: ここではファイルシステム上の任意の場所の
-    # サブディレクトリだけを列挙する(どのワークスペースにも属さない)。
+    # サブディレクトリだけを列挙する(どのプロジェクトにも属さない)。
 
     # ドット始まりのディレクトリ(.git・.cache等)は、プロジェクト内のファイル
     # 一覧(GET /api/files等)と同じ理由で一覧から除外し、見た目をすっきりさせる。
@@ -381,76 +382,31 @@ module Picoride
       { path: full, parent: full_parent, entries: entries }.to_json
     end
 
-    # 編集可能なプロジェクト一覧を返す
-    get "/api/projects" do
-      content_type :json
-      available_projects.to_json
-    end
-
-    # 新しいプロジェクトを作成する。中身は最小構成(app/app.rb・build_config.rbの
-    # 空ファイル)だけ用意し、mrbgemsディレクトリは最初のmrbgem追加時に作る
-    # (project_mrbgem_names は mrbgems/ が無くても空配列を返すため、事前に
-    # 用意しておく必要がない)。
-    post "/api/projects" do
-      content_type :json
-
-      payload =
-        begin
-          JSON.parse(request.body.read)
-        rescue JSON::ParserError
-          json_error(400, "invalid json body")
-        end
-
-      name = payload["name"].to_s
-      json_error(400, "invalid project name") unless valid_name?(name)
-
-      full = File.join(workspace_root, name)
-      json_error(409, "project already exists") if File.exist?(full)
-
-      FileUtils.mkdir_p(File.join(full, APP_DIRNAME))
-      File.write(File.join(full, APP_DIRNAME, "app.rb"), "")
-      File.write(File.join(full, BUILD_CONFIG_FILENAME), "")
-
-      { status: "ok", name: name }.to_json
-    end
-
-    # 指定プロジェクトの編集可能なファイル一覧を返す
+    # 編集可能なファイル一覧を返す(現在開いているプロジェクト内)
     get "/api/files" do
       content_type :json
 
-      begin
-        root = project_root(params[:project])
-      rescue ArgumentError
-        json_error(400, "invalid project")
-      end
-
-      files = Dir.glob(File.join(root, "**", "*")).select do |f|
+      files = Dir.glob(File.join(project_root, "**", "*")).select do |f|
         File.file?(f) && ALLOWED_EXTENSIONS.include?(File.extname(f))
       end
 
-      relative_paths = files.map { |f| f.sub(root + File::SEPARATOR, "") }.sort
+      relative_paths = files.map { |f| f.sub(project_root + File::SEPARATOR, "") }.sort
 
       relative_paths.to_json
     end
 
-    # 指定プロジェクトのディレクトリ一覧を返す。GET /api/files はファイルの並びから
-    # ツリーを組み立てる都合上、中身が空のディレクトリを表現できない(TreeView側は
+    # ディレクトリ一覧を返す。GET /api/files はファイルの並びからツリーを
+    # 組み立てる都合上、中身が空のディレクトリを表現できない(TreeView側は
     # state[:files]から導出したノードしか描画しないため)。新規フォルダ作成
-    # (POST /api/projects/:name/folders)で空のフォルダを作れるようになったことで
-    # これが表面化するため、ディレクトリ一覧だけは別に取得できるようにしてある。
+    # (POST /api/folders)で空のフォルダを作れるようになったことでこれが
+    # 表面化するため、ディレクトリ一覧だけは別に取得できるようにしてある。
     # ドット始まりのディレクトリ(.r2p2-esp32等)は GET /api/files と同じ理由
     # (Dir.globの既定動作)で自動的に除外される。
     get "/api/dirs" do
       content_type :json
 
-      begin
-        root = project_root(params[:project])
-      rescue ArgumentError
-        json_error(400, "invalid project")
-      end
-
-      dirs = Dir.glob(File.join(root, "**", "*")).select { |f| File.directory?(f) }
-      relative_paths = dirs.map { |f| f.sub(root + File::SEPARATOR, "") }.sort
+      dirs = Dir.glob(File.join(project_root, "**", "*")).select { |f| File.directory?(f) }
+      relative_paths = dirs.map { |f| f.sub(project_root + File::SEPARATOR, "") }.sort
 
       relative_paths.to_json
     end
@@ -462,12 +418,12 @@ module Picoride
       rel = params[:path]
       json_error(400, "path is required") if rel.nil? || rel.empty?
 
-      begin
-        root = project_root(params[:project])
-        full = safe_path(root, rel)
-      rescue ArgumentError
-        json_error(400, "invalid path")
-      end
+      full =
+        begin
+          safe_path(project_root, rel)
+        rescue ArgumentError
+          json_error(400, "invalid path")
+        end
 
       json_error(404, "file not found") unless File.file?(full)
       json_error(400, "unsupported file type") unless ALLOWED_EXTENSIONS.include?(File.extname(full))
@@ -492,12 +448,12 @@ module Picoride
       json_error(400, "path is required") if rel.nil? || rel.empty?
       json_error(400, "content is required") if content.nil?
 
-      begin
-        root = project_root(payload["project"])
-        full = safe_path(root, rel)
-      rescue ArgumentError
-        json_error(400, "invalid path")
-      end
+      full =
+        begin
+          safe_path(project_root, rel)
+        rescue ArgumentError
+          json_error(400, "invalid path")
+        end
 
       # 既存ファイルの上書きのみ許可(新規ファイル作成はサンプルでは対象外)
       json_error(404, "file not found") unless File.file?(full)
@@ -510,15 +466,8 @@ module Picoride
 
     # 新規ファイルを作成する(空ファイル)。POST /api/fileは既存ファイルの上書きしか
     # 許可していないので、新規作成はこちらに分けてある。
-    post "/api/projects/:name/files" do
+    post "/api/files" do
       content_type :json
-
-      root =
-        begin
-          project_root(params[:name])
-        rescue ArgumentError
-          json_error(400, "invalid project")
-        end
 
       payload =
         begin
@@ -535,7 +484,7 @@ module Picoride
 
       full =
         begin
-          safe_path(root, rel)
+          safe_path(project_root, rel)
         rescue ArgumentError
           json_error(400, "invalid path")
         end
@@ -549,15 +498,8 @@ module Picoride
     end
 
     # 新規フォルダを作成する(空ディレクトリ)。新規ファイルと同じくapp/配下のみ許可する。
-    post "/api/projects/:name/folders" do
+    post "/api/folders" do
       content_type :json
-
-      root =
-        begin
-          project_root(params[:name])
-        rescue ArgumentError
-          json_error(400, "invalid project")
-        end
 
       payload =
         begin
@@ -573,7 +515,7 @@ module Picoride
 
       full =
         begin
-          safe_path(root, rel)
+          safe_path(project_root, rel)
         rescue ArgumentError
           json_error(400, "invalid path")
         end
@@ -588,22 +530,15 @@ module Picoride
     # ファイルを削除する。ツリーのコンテキストメニュー(「削除」)から呼ばれる。
     # 新規作成とは違いapp/配下に限定しない(mrbgemの.c/.h等、プロジェクト内の
     # ALLOWED_EXTENSIONSファイルであればどこでも削除できる)。
-    delete "/api/projects/:name/files" do
+    delete "/api/files" do
       content_type :json
-
-      root =
-        begin
-          project_root(params[:name])
-        rescue ArgumentError
-          json_error(400, "invalid project")
-        end
 
       rel = params[:path].to_s
       json_error(400, "path is required") if rel.empty?
 
       full =
         begin
-          safe_path(root, rel)
+          safe_path(project_root, rel)
         rescue ArgumentError
           json_error(400, "invalid path")
         end
@@ -620,15 +555,8 @@ module Picoride
     # (app/はR2P2起動スクリプトの置き場所、mrbgems/は「mrbgemを追加」専用の
     # 置き場所)なので削除させない。UIのコンテキストメニューでもこの2つには
     # 「削除」を出していないが、APIを直接叩かれた場合の防御として二重にチェックする。
-    delete "/api/projects/:name/folders" do
+    delete "/api/folders" do
       content_type :json
-
-      root =
-        begin
-          project_root(params[:name])
-        rescue ArgumentError
-          json_error(400, "invalid project")
-        end
 
       rel = params[:path].to_s
       json_error(400, "path is required") if rel.empty?
@@ -637,7 +565,7 @@ module Picoride
 
       full =
         begin
-          safe_path(root, rel)
+          safe_path(project_root, rel)
         rescue ArgumentError
           json_error(400, "invalid path")
         end
@@ -649,29 +577,27 @@ module Picoride
       { status: "ok", path: rel }.to_json
     end
 
-    # --- ワークスペース設定(ターゲット・VM・USB Console) --------------------
+    # --- プロジェクト設定(ターゲット・VM・USB Console) ----------------------
     #
     # 以前はビルドボタンを押すたびにダイアログでVM/USB Consoleを選ばせ、ターゲット
     # チップはメニューバーの常設セレクトで選ぶ形だったが、「プロジェクトの設定として
     # プロジェクトに含めたい」というフィードバックを受けて、プロジェクトごとに
-    # 隠しファイル`.config.yml`へ永続化する方式に変更した。その後さらに
-    # 「設定はワークスペース毎に持たせてほしい」というフィードバックを受けて、
-    # スコープをプロジェクトからワークスペースへ変更した(1ワークスペース内の
-    # 複数プロジェクトがターゲット・VM・USB Consoleを共有する)。永続化先も
-    # プロジェクトディレクトリの中の`.config.yml`から`~/.picoride/workspace.toml`
-    # (WorkspaceStore、workspace_root/known_workspacesと同じファイル)に移した。
-    # 既存プロジェクトの`.config.yml`は読まなくなるだけで削除はしない(移行処理は
-    # 行わない。クリーンな置き換えという判断)。UI側は「設定」ダイアログで編集し、
-    # ビルド/プラットフォームセットアップはその時点の設定値をそのまま使って
-    # 即座に実行するだけになる。
+    # 隠しファイル`.config.yml`へ永続化する方式に変更した。その後「設定はワークスペース
+    # (当時はプロジェクトの上位概念だった)毎に持たせてほしい」という要望で
+    # `~/.picoride/workspace.toml`へ移し、さらに「ワークスペース=プロジェクトだった」
+    # というフィードバックで2階層構成自体を1階層に統合した結果、現在は単純に
+    # 「開いているプロジェクトの設定」として`~/.picoride/project.toml`
+    # (ProjectStore、project_root/known_projectsと同じファイル)に永続化している。
+    # UI側は「設定」ダイアログで編集し、ビルド/プラットフォームセットアップは
+    # その時点の設定値をそのまま使って即座に実行するだけになる。
 
-    get "/api/workspace/config" do
+    get "/api/project/config" do
       content_type :json
-      read_workspace_config.to_json
+      read_project_config.to_json
     end
 
     # body(JSON): { platform:, vm:, usb_console: } — platform/vmはnull(未選択)も許可
-    post "/api/workspace/config" do
+    post "/api/project/config" do
       content_type :json
 
       payload =
@@ -688,8 +614,8 @@ module Picoride
       json_error(400, "invalid vm") if vm && !BUILD_VM_FLAGS.key?(vm)
 
       config = { "platform" => platform, "vm" => vm, "usb_console" => payload["usb_console"] == true }
-      self.class.workspace_settings = workspace_settings.merge(workspace_root => config)
-      WorkspaceStore.save(active: workspace_root, paths: known_workspaces, settings: workspace_settings)
+      self.class.project_settings = project_settings.merge(project_root => config)
+      ProjectStore.save(active: project_root, paths: known_projects, settings: project_settings)
 
       { status: "ok" }.to_json
     end
@@ -703,7 +629,7 @@ module Picoride
     # 差し込む」フックをDockerfileで1行だけ本家4ファイルに追加している(該当箇所は
     # `conf.instance_eval(File.read(ENV['PROJECT_BUILD_CONFIG'])) if ...`)。
     #
-    # projects/<project>/mrbgems/以下にあるものは全部自動でビルドに含める(選ぶUIは無い)。
+    # mrbgems/以下にあるものは全部自動でビルドに含める(選ぶUIは無い)。
     # プロジェクトの中に物理的にmrbgemを置く=そのプロジェクトで使う、という構造そのものが
     # 選択を兼ねているので、ビルドのたびに`generated_build_config_content`で
     # 「その時点でmrbgems/以下にあるgem一覧」から`conf.gem gemdir:`の並びを作り、
@@ -731,18 +657,11 @@ module Picoride
       RUBY
     end
 
-    # projects/<project>/mrbgems/以下に新しいmrbgemの雛形(mrbgem.rake・
-    # mrblib/<name>.rb)を作る。ここに置くだけで次回ビルドから自動的に
-    # 組み込まれる(generated_build_config_content参照。選ぶUIは無い)。
-    post "/api/projects/:name/mrbgems" do
+    # mrbgems/以下に新しいmrbgemの雛形(mrbgem.rake・mrblib/<name>.rb)を作る。
+    # ここに置くだけで次回ビルドから自動的に組み込まれる
+    # (generated_build_config_content参照。選ぶUIは無い)。
+    post "/api/mrbgems" do
       content_type :json
-
-      root =
-        begin
-          project_root(params[:name])
-        rescue ArgumentError
-          json_error(400, "invalid project")
-        end
 
       payload =
         begin
@@ -754,7 +673,7 @@ module Picoride
       gem_name = payload["name"].to_s
       json_error(400, "invalid mrbgem name") unless valid_name?(gem_name)
 
-      gem_dir = File.join(root, MRBGEMS_DIRNAME, gem_name)
+      gem_dir = File.join(project_root, MRBGEMS_DIRNAME, gem_name)
       json_error(409, "mrbgem already exists") if File.exist?(gem_dir)
 
       FileUtils.mkdir_p(File.join(gem_dir, "mrblib"))
@@ -797,8 +716,7 @@ module Picoride
     # 実際に確認したため(root専用のシステムgemパスを使っている以上、非rootでは
     # そもそも動かせない)。その代わり、bind mountしたstate_dir配下がroot所有のまま
     # ホストに残ってプロジェクトディレクトリの持ち主(ホストユーザー)から扱いにくく
-    # なる問題(実際に`.config.yml`のroot所有・stateディレクトリの再構築で発生)を
-    # 避けるため、コマンド完了後に必ず`chown`でホストユーザーの所有に戻す
+    # なる問題を避けるため、コマンド完了後に必ず`chown`でホストユーザーの所有に戻す
     # (`;`でつないでinner_cmdの成否に関わらず実行し、`inner_cmd`自体の終了コードは
     # `$?`で保持して最後に`exit`し直すことで、chown自体の成否でBUILD_JOBの成功/失敗
     # 判定が変わらないようにしている)。
@@ -858,36 +776,13 @@ module Picoride
 
     # R2P2-ESP32 のビルド(idf.py build)をバックグラウンドで開始する。
     # 実行中に重ねて叩かれた場合は 409 を返す(同時に複数走らせない)。
-    # VM・USB Consoleはリクエストでは受け取らず、そのワークスペースの設定
-    # (read_workspace_config、ターゲットと同じく`.config.yml`ではなく
-    # `~/.picoride/workspace.toml`から読む)に保存されている値をそのまま使う。
-    # R2P2-ESP32の状態はプロジェクトごとに独立している(r2p2_state_dir)ので、
-    # 初回はここでgit clone(R2P2State.ensure_checkout)が走り、数分かかることがある。
-    #
-    # body(JSON):
-    #   project: "hello_world_project" のようなプロジェクト名(必須)。app/以下を
-    #            実機の起動スクリプトに、mrbgems/以下とbuild_config.rbをビルド設定に
-    #            それぞれ反映させる(詳細は上のコメント参照)
+    # VM・USB Consoleはリクエストでは受け取らず、現在のプロジェクトの設定
+    # (read_project_config、`~/.picoride/project.toml`から読む)に保存されている
+    # 値をそのまま使う。R2P2-ESP32の状態はプロジェクトごとに独立している
+    # (r2p2_state_dir)ので、初回はここでgit clone(R2P2State.ensure_checkout)が
+    # 走り、数分かかることがある。
     post "/api/build" do
       content_type :json
-
-      payload =
-        begin
-          body = request.body.read
-          body.empty? ? {} : JSON.parse(body)
-        rescue JSON::ParserError
-          json_error(400, "invalid json body")
-        end
-
-      project_name = payload["project"]
-      json_error(400, "project is required") if project_name.to_s.empty?
-
-      root =
-        begin
-          project_root(project_name)
-        rescue ArgumentError
-          json_error(400, "invalid project")
-        end
 
       # BUILD_JOB/PLATFORM_JOBは別々のロックなので、これが無いと「ビルド中に別の
       # リクエストでプラットフォームセットアップ(rake setup_xxxのdeep_clean)を始める」
@@ -901,11 +796,12 @@ module Picoride
           "docker build -t #{BUILDER_IMAGE} . を実行してください")
       end
 
+      root = project_root
       state_dir = r2p2_state_dir(root)
       ensure_project_gitignore(root)
       ensure_r2p2_checkout!(state_dir)
 
-      # そのprojectのapp/以下を実機の起動スクリプトにする(storage/home/を参照する
+      # プロジェクトのapp/以下を実機の起動スクリプトにする(storage/home/を参照する
       # R2P2本来の仕組み。詳細は上のコメント参照)。前回このプロジェクトをビルドした
       # ときの残骸が残らないよう、まずstorage/home/を空にしてからコピーし直す。
       storage_home_dir = File.join(state_dir, "storage", "home")
@@ -916,15 +812,15 @@ module Picoride
         FileUtils.cp_r(Dir.glob(File.join(project_app_dir, "*")), storage_home_dir)
       end
 
-      workspace_config = read_workspace_config
-      vm = workspace_config["vm"]
-      usb_console = workspace_config["usb_console"]
+      project_config = read_project_config
+      vm = project_config["vm"]
+      usb_console = project_config["usb_console"]
 
       build_cmd = +"idf.py build"
       build_cmd << " -DPICORB_VM=#{BUILD_VM_FLAGS[vm]}" if vm
 
-      # projects/<project>/mrbgems/以下の現在の一覧とbuild_config.rbから、実際に
-      # R2P2-ESP32へ渡すファイルをビルドのたびに作り直す(generated_build_config_content参照)。
+      # mrbgems/以下の現在の一覧とbuild_config.rbから、実際にR2P2-ESP32へ渡す
+      # ファイルをビルドのたびに作り直す(generated_build_config_content参照)。
       # PROJECT_BUILD_CONFIGにはコンテナ内から見たパスを渡す(ホスト側の実パスではない)。
       generated_build_config = File.join(root, GENERATED_BUILD_CONFIG_FILENAME)
       File.write(generated_build_config, generated_build_config_content(root))
@@ -956,35 +852,16 @@ module Picoride
       PLATFORM_JOB.to_response_json
     end
 
-    # 現在のワークスペースの設定に設定されているターゲットへ向けて
+    # 現在のプロジェクトの設定に設定されているターゲットへ向けて
     # `rake setup_#{platform}` をバックグラウンドで実行する。ターゲット自体は
-    # リクエストでは受け取らず、ワークスペース設定ダイアログで保存された値を使う。
+    # リクエストでは受け取らず、設定ダイアログで保存された値を使う。
     # setup_esp32xxx は deep_clean + setup(mrubyの再ビルド) + idf.py set-target という
     # 重い処理の直列実行(R2P2-ESP32/rakelib/setup.rake参照)。
-    #
-    # body(JSON): { project: "hello_world_project" }(必須)
     post "/api/platform" do
       content_type :json
 
-      payload =
-        begin
-          JSON.parse(request.body.read)
-        rescue JSON::ParserError
-          json_error(400, "invalid json body")
-        end
-
-      project_name = payload["project"]
-      json_error(400, "project is required") if project_name.to_s.empty?
-
-      root =
-        begin
-          project_root(project_name)
-        rescue ArgumentError
-          json_error(400, "invalid project")
-        end
-
-      platform = read_workspace_config["platform"]
-      json_error(400, "platform is not configured for this workspace") if platform.to_s.empty?
+      platform = read_project_config["platform"]
+      json_error(400, "platform is not configured for this project") if platform.to_s.empty?
 
       # BUILD_JOBとの同時実行を防ぐ理由はPOST /api/build側のコメント参照。
       json_error(409, "build is running") if BUILD_JOB.running?
@@ -994,6 +871,7 @@ module Picoride
           "docker build -t #{BUILDER_IMAGE} . を実行してください")
       end
 
+      root = project_root
       state_dir = r2p2_state_dir(root)
       ensure_project_gitignore(root)
       ensure_r2p2_checkout!(state_dir)
@@ -1008,9 +886,8 @@ module Picoride
     # (https://esphome.github.io/esp-web-tools/、index.html でCDN読み込み)経由の
     # ブラウザのWeb Serial APIで行う。サーバはビルド成果物からマニフェストと.binを
     # 配信するだけで、実際の書き込み処理はブラウザ側(esp-web-install-button)が担う。
-    # ビルド成果物はプロジェクトごとのR2P2-ESP32状態ディレクトリ(r2p2_state_dir)の下、
-    # `build/`にある。プロジェクトが分かれた都合で、この2つのエンドポイントは
-    # どちらも`project`パラメータを要求する。
+    # ビルド成果物は現在のプロジェクトのR2P2-ESP32状態ディレクトリ(r2p2_state_dir)の下、
+    # `build/`にある。
 
     # idf.py set-target のターゲット名 → ESP Web Tools の chipFamily 名。
     # ESP Web Tools が対応しているチップ一覧(esp-web-tools/src/const.ts の Build#chipFamily)
@@ -1035,16 +912,7 @@ module Picoride
     get "/api/firmware/manifest.json" do
       content_type :json
 
-      project_name = params[:project]
-      json_error(400, "project is required") if project_name.to_s.empty?
-
-      root =
-        begin
-          project_root(project_name)
-        rescue ArgumentError
-          json_error(400, "invalid project")
-        end
-
+      root = project_root
       build_dir = firmware_build_dir(root)
       desc_path = File.join(build_dir, "project_description.json")
       flash_args_path = File.join(build_dir, "flash_args")
@@ -1054,7 +922,6 @@ module Picoride
       chip_family = CHIP_FAMILY_MAP[target]
       json_error(500, "unsupported target: #{target}") unless chip_family
 
-      encoded_project = URI.encode_www_form_component(project_name)
       parts = File.readlines(flash_args_path).drop(1).filter_map do |line|
         line = line.strip
         next if line.empty?
@@ -1063,7 +930,7 @@ module Picoride
         # rel_path は "bootloader/bootloader.bin" のようにサブディレクトリを含むことがある。
         # basename に切り詰めると実体(build/bootloader/bootloader.bin)と食い違って
         # 404になるため、相対パスのままURLに使う(下の配信ルート側もそれに合わせてある)。
-        { path: "/api/firmware/#{rel_path}?project=#{encoded_project}", offset: Integer(offset_hex, 16) }
+        { path: "/api/firmware/#{rel_path}", offset: Integer(offset_hex, 16) }
       end
 
       {
@@ -1081,19 +948,9 @@ module Picoride
       rel_path = params[:splat].first
       json_error(400, "invalid filename") unless rel_path.end_with?(".bin")
 
-      project_name = params[:project]
-      json_error(400, "project is required") if project_name.to_s.empty?
-
-      root =
-        begin
-          project_root(project_name)
-        rescue ArgumentError
-          json_error(400, "invalid project")
-        end
-
       full =
         begin
-          safe_path(firmware_build_dir(root), rel_path)
+          safe_path(firmware_build_dir(project_root), rel_path)
         rescue ArgumentError
           json_error(400, "invalid path")
         end

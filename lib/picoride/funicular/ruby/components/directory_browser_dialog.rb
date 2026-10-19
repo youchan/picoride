@@ -1,13 +1,13 @@
-# 「ワークスペースを開く」のディレクトリ選択UI。絶対パスを直接テキスト入力させる
+# 「プロジェクトを開く」のディレクトリ選択UI。絶対パスを直接テキスト入力させる
 # 代わりに、よくあるファイルビューアのようにパンくず("/"区切りのクリック可能な
 # セグメント)とサブディレクトリの一覧でファイルシステムを辿れるようにしてある。
 #
 # EditorAppの「子コンポーネントは親の再描画のたびに作り直される」制約により、
 # このコンポーネント自身はinitialize_stateを持たない(表示専用)。現在地・
-# 一覧・読み込み中/エラー状態は全部EditorApp側のstate[:workspace_browser]に
-# 持たせ、propsとして受け取るだけにしてある(TreeView / OpenProjectDialogと
-# 同じ設計)。新規フォルダ名の入力欄だけはPromptDialogと同じ理由(ポーリング中の
-# 親再描画で入力中の文字が消える)でrefベースの非制御コンポーネントにしてある。
+# 一覧・読み込み中/エラー状態は全部EditorApp側のstate[:project_browser]に
+# 持たせ、propsとして受け取るだけにしてある(TreeViewと同じ設計)。新規フォルダ名の
+# 入力欄だけはPromptDialogと同じ理由(ポーリング中の親再描画で入力中の文字が
+# 消える)でrefベースの非制御コンポーネントにしてある。
 #
 # props:
 #   path:              現在表示しているディレクトリの絶対パス(初回ロード前はnil)
@@ -28,7 +28,7 @@ class DirectoryBrowserDialog < Funicular::Component
   def render
     div(class: 'dialog-overlay') do
       div(class: 'dialog directory-browser-dialog') do
-        h2 { 'ワークスペースを開く' }
+        h2 { 'プロジェクトを開く' }
         render_breadcrumb
         div(class: 'directory-browser-toolbar') do
           render_up_button
@@ -105,7 +105,7 @@ class DirectoryBrowserDialog < Funicular::Component
   #   [{label: '/', path: '/'}, {label: 'home', path: '/home'},
   #    {label: 'youchan', path: '/home/youchan'}, {label: 'Projects', path: '/home/youchan/Projects'}]
   # PicoRuby.wasm上ではFile系メソッドの対応が不確かなため、素の文字列分割で求める
-  # (menu_bar.rbのworkspace_labelと同じ理由)。
+  # (menu_bar.rbのproject_labelと同じ理由)。
   def breadcrumb_segments
     path = props[:path].to_s
     return [] if path.empty?
@@ -168,7 +168,7 @@ class DirectoryBrowserDialog < Funicular::Component
 
   # entryはJSON(GET /api/browseのentries)をそのまま渡しているため、
   # パース結果がシンボルキーになるとは限らない(文字列キーのHashになりうる)。
-  # value_of(menu_bar.rbのworkspace_label付近と同じ理由)で両対応させる。
+  # value_of(menu_bar.rbのproject_label付近と同じ理由)で両対応させる。
   def render_entry(entry)
     path = value_of(entry, 'path')
     div(class: 'directory-browser-item', key: path, onclick: -> { navigate_to(path) }) do

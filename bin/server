@@ -7,9 +7,9 @@
 #
 #   docker build -t picoride-builder .
 #
-# プロジェクトの置き場所(ワークスペース)は起動時には決まっておらず、起動後に
-# ブラウザの「ファイル」>「ワークスペースを開く」から絶対パスを指定して開く
-# (lib/picoride/server.rb の POST /api/workspace 参照)。
+# プロジェクトの置き場所は起動時には決まっておらず、起動後にブラウザの
+# 「ファイル」>「プロジェクトを開く」からディレクトリを指定して開く
+# (lib/picoride/server.rb の POST /api/project 参照)。
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
