@@ -170,19 +170,28 @@ module Picoride
       end
 
       # 新しく開いた(あるいは初めて開く)プロジェクトに、起動スクリプトの土台
-      # (app/app.rb)とビルド設定ファイル(build_config.rb)が無ければ空で
-      # 用意しておく。既存ファイルは上書きしない(非破壊)。以前の「新しい
-      # プロジェクト」(ワークスペース配下に名前でサブディレクトリを作る機能)が
-      # 担っていた雛形作成を、「プロジェクトを開く」(DirectoryBrowserDialogで
-      # 任意のディレクトリを指定・新規フォルダ作成して開く)に統合したもの。
+      # (app/app.rb)とビルド設定ファイル(build_config.rb)を空で用意しておく。
+      # 以前の「新しいプロジェクト」(ワークスペース配下に名前でサブディレクトリを
+      # 作る機能)が担っていた雛形作成を、「プロジェクトを開く」
+      # (DirectoryBrowserDialogで任意のディレクトリを指定・新規フォルダ作成して
+      # 開く)に統合したもの。
+      #
+      # **空のディレクトリのときだけ**生成する(rootが完全に空かどうかをDir.empty?で
+      # 判定)。最初は「app/app.rb・build_config.rbが無ければ(他に何があっても)
+      # 作る」という実装にしていたが、間違って1階層上の(本来のプロジェクトを
+      # サブディレクトリとして含む)ディレクトリを開いてしまった場合に、そこへ
+      # 無関係な空のapp/・build_config.rbを生成してしまい、ファイルツリーに
+      # 「正しいプロジェクトのサブディレクトリ」と「誤って生成された空のapp/」が
+      # 並んで表示される、という実際の事故が起きた。ディレクトリに何かしら既存の
+      # 中身がある場合は「間違ったディレクトリを開いた可能性がある」とみなして
+      # 何もしない(空ディレクトリ=新規作成したばかりで明らかに安全、という
+      # ケースだけに絞る)。
       def ensure_project_scaffold(root)
-        app_dir = File.join(root, APP_DIRNAME)
-        FileUtils.mkdir_p(app_dir)
-        app_file = File.join(app_dir, "app.rb")
-        File.write(app_file, "") unless File.exist?(app_file)
+        return unless Dir.empty?(root)
 
-        build_config_path = File.join(root, BUILD_CONFIG_FILENAME)
-        File.write(build_config_path, "") unless File.exist?(build_config_path)
+        FileUtils.mkdir_p(File.join(root, APP_DIRNAME))
+        File.write(File.join(root, APP_DIRNAME, "app.rb"), "")
+        File.write(File.join(root, BUILD_CONFIG_FILENAME), "")
       end
 
       def json_error(status, message)
