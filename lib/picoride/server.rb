@@ -12,8 +12,12 @@ require_relative "project_store"
 
 module Picoride
   class Server < Sinatra::Base
-    set :public_folder, File.join(__dir__, "public")
-    set :views, File.join(__dir__, "views")
+    # 静的ファイル・ERBテンプレート・Funicular(ブラウザ側Ruby)はgemルートの
+    # web/ 配下に置いている(lib/はサーバ側のRubyコード専用、exe/は実行ファイル専用)。
+    WEB_ROOT = File.expand_path("../../web", __dir__)
+
+    set :public_folder, File.join(WEB_ROOT, "public")
+    set :views, File.join(WEB_ROOT, "views")
 
     if settings.development?
       set :static_cache_control, [:no_store, :no_cache, :must_revalidate]
@@ -63,7 +67,7 @@ module Picoride
     self.project_root = loaded_projects[:active]
     self.project_settings = loaded_projects[:settings]
 
-    FUNICULAR_ROOT = File.expand_path("funicular", __dir__)
+    FUNICULAR_ROOT = File.join(WEB_ROOT, "funicular")
 
     # プロジェクトごとに独立したR2P2-ESP32のビルド状態(sdkconfig・build/・
     # managed_components等)を置くディレクトリ名。「プロジェクトディレクトリの中に

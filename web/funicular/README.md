@@ -1,15 +1,15 @@
-# app/funicular
+# web/funicular
 
 PicoRuby.wasm + [Funicular](https://github.com/picoruby/funicular)(hasumikin作)で書いた
 エディタのフロントエンド。**JavaScriptを書かずに、ブラウザ側のロジックを全部Rubyで書く**構成。
 
-バックエンド(Sinatra)と編集対象ファイル、CSSは `../` (= `app/`)のものをそのまま使う。
+バックエンド(Sinatra)は `lib/picoride/server.rb`、CSSは `../public/` (= `web/public/`)のものをそのまま使う。
 このディレクトリにはフロントエンドのRubyコードとHTMLだけを置く。
 
 ## 構成
 
 ```
-app/funicular/
+web/funicular/
 ├── index.html                     # PicoRuby.wasm と Prism.js の読み込み + マウント先
 └── ruby/
     ├── main.rb                    # Funicular.start(EditorApp, container: 'app')
@@ -36,7 +36,7 @@ $ ruby app/app.rb
 - `/` … Funicular版エディタ
 - `/legacy` … 旧エディタ(素のJavaScript + Prism.js版)。比較用に残してある
 
-`app/app.rb` 側に、`/ruby/**/*.rb` を `app/funicular/ruby/` から配信するルートを足してある。
+`lib/picoride/server.rb` 側に、`/ruby/**/*.rb` を `web/funicular/ruby/` から配信するルートを足してある。
 
 ## 設計メモ
 
@@ -89,7 +89,7 @@ VDOM描画にしている。スクロール追従は `onscroll:` ハンドラで
 ### スクロールのズレ対策
 
 `.editor-scroll-area` に `display: grid` を指定し、ハイライト層と textarea を
-`grid-area: 1 / 1` で重ねる方式(`app/public/css/style.css`)。
+`grid-area: 1 / 1` で重ねる方式(`web/public/css/style.css`)。
 これは旧エディタから引き継いだCSSで、textareaが要素内部で独自スクロールして
 キャレットとハイライトがズレる問題への対処。
 

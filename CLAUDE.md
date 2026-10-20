@@ -125,7 +125,7 @@ POSTは409)なので、共通処理を `BackgroundJob` クラス(`app.rb`)に抽
 (Dockerのentrypoint(`R2P2-ESP32/docker/Dockerfile`)は起動時に一度export済みだが、
 `docker exec` 等で入った場合はexportされていないことがあり、それに頼らない実装にした)。
 
-UI側(`lib/picoride/funicular/ruby/components/editor_app.rb`)は実行中、
+UI側(`web/funicular/ruby/components/editor_app.rb`)は実行中、
 `JS.global.setTimeout(3000) { refresh_xxx_status }` で3秒おきに自動的にログを
 取りに行く(runningでなくなったら止まる)。「ログを更新」ボタンはこれとは別に、
 すぐ最新状態を見たいときの手動トリガーとして残してある。
@@ -745,7 +745,7 @@ EditorApp直下に置く」設計と全く同じ理由・同じ対処であり�
 ## サイドバーのファイル一覧をツリー表示にした(TreeView)
 
 「ファイル一覧をツリー表示に、フォルダの開閉もできるように」という要望を受けて、
-`FileList`(フラットな一覧、表示専用)を`TreeView`(`lib/picoride/funicular/ruby/components/
+`FileList`(フラットな一覧、表示専用)を`TreeView`(`web/funicular/ruby/components/
 tree_view.rb`)に置き換えた。
 
 ### 汎用コンポーネントとして設計した
@@ -1019,6 +1019,21 @@ gemの`spec.files`は`git ls-files`から`bin/`等を除いたもの(`picoride.g
 (`app/`は空になって消滅)。移動後も`index.erb`内のURLはサーバーのルート
 (`/css/style.css`・`/ruby/components/*.rb`)への参照であり、物理的な
 配置場所には依存しないので書き換え不要だった。
+
+### 続き: `lib/picoride/{public,funicular,views}/` → `web/{public,funicular,views}/`
+
+上の移動で gem には同梱されるようになったが、`lib/` は `$LOAD_PATH` に入る
+サーバ側Rubyコードの置き場であり、CSS/JS・ERB・ブラウザ(PicoRuby.wasm)側で
+動くFunicularのコードが混ざるのは役割として不自然だったため、gemルート直下の
+`web/` に移した(Sidekiqの `web/assets` `web/views` と同じ発想)。
+
+- `exe/` 配下は**不可**: gemspecの`spec.executables = spec.files.grep(%r{\Aexe/})`
+  に引っかかり、`style.css`等が実行ファイルとしてbinstub化されてしまう
+- `spec.files`は`git ls-files`から`bin/` `test/`等を除いたものなので、
+  ルート直下の`web/`は設定変更なしでgemに同梱される
+- `server.rb`は`WEB_ROOT = File.expand_path("../../web", __dir__)`を基点に
+  `public_folder` / `views` / `FUNICULAR_ROOT`を組み立てる。配信URL
+  (`/css/...` `/js/...` `/ruby/...`)は変わらない
 
 ### `exe/picoride`: gem実行ファイルとしての注意点
 
