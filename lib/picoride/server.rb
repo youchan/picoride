@@ -9,6 +9,7 @@ require "uri"
 require_relative "background_job"
 require_relative "r2p2_state"
 require_relative "project_store"
+require_relative "builder_images"
 
 module Picoride
   class Server < Sinatra::Base
@@ -95,13 +96,18 @@ module Picoride
     DEFAULT_PLATFORM_FAMILY = "esp32"
 
     # ファミリーごとのビルド専用イメージ(docker/esp32/Dockerfile・docker/pico/Dockerfile)。
-    # どちらも事前に`docker build`しておく必要がある(BUILDER_DOCKERFILE_DIRS参照)。
-    # ESP32側は旧来の環境変数PICORUBY_BUILDER_IMAGEでも上書きできるようにしてある。
-    BUILDER_IMAGES = {
-      "esp32" => ENV["PICORIDE_ESP32_BUILDER_IMAGE"] || ENV["PICORUBY_BUILDER_IMAGE"] || "picoride-builder-esp32",
-      "pico" => ENV["PICORIDE_PICO_BUILDER_IMAGE"] || "picoride-builder-pico"
-    }.freeze
-    BUILDER_DOCKERFILE_DIRS = { "esp32" => "docker/esp32", "pico" => "docker/pico" }.freeze
+    # 名前はBuilderImagesで一か所に決めてある(Docker Hubの
+    # `youchan/picoride-builder-{esp32,pico}:<gemのバージョン>`。環境変数で上書き可)。
+    # 手元に無ければビルド開始時に自動で`docker pull`する(builder_docker_command)ので、
+    # gemを使う人がDockerfileからイメージをビルドする必要はない。
+    BUILDER_IMAGES = BuilderImages::FAMILIES.to_h { |family| [family, BuilderImages.image(family)] }.freeze
+
+    # pullできなかったとき(未公開のバージョン・オフライン等)に案内する、
+    # 自分でビルドする場合のDockerfileのディレクトリ。gemとしてインストールされた
+    # 場合もgemの中にdocker/が同梱されるので、絶対パスで案内する。
+    BUILDER_DOCKERFILE_DIRS = BuilderImages::FAMILIES.to_h do |family|
+      [family, File.expand_path("../../#{BuilderImages.dockerfile_dir(family)}", __dir__)]
+    end.freeze
 
     # ビルド専用コンテナの中で、プロジェクト本体・ビルド状態(R2P2-ESP32または
     # picoruby)をそれぞれbind mountする先の固定パス。ホスト側の実パスとコンテナ内
@@ -790,25 +796,36 @@ module Picoride
         "chown -R #{chown_target} #{Shellwords.escape(state_mount)}; " \
         "exit $exit_code"
 
-      "docker run --rm " \
+      "#{builder_image_pull_command(family)}" \
+        "docker run --rm " \
         "-v #{Shellwords.escape(state_dir)}:#{state_mount} " \
         "-v #{Shellwords.escape(project_dir)}:#{CONTAINER_PROJECT_MOUNT} " \
         "#{Shellwords.escape(BUILDER_IMAGES.fetch(family))} " \
         "bash -c #{Shellwords.escape(full_inner_cmd)}"
     end
 
-    # ファミリーのビルド用イメージがローカルに存在するかどうか。無いままdocker runすると
-    # 分かりにくいエラーになるので、事前にチェックして案内を出せるようにする。
+    # ファミリーのビルド用イメージがローカルに存在するかどうか。
     def builder_image_available?(family)
       system("docker", "image", "inspect", BUILDER_IMAGES.fetch(family), out: File::NULL, err: File::NULL)
     end
 
-    def ensure_builder_image!(family)
-      return if builder_image_available?(family)
+    # イメージが手元に無ければ、docker runの前に`docker pull`するコマンド片を返す
+    # (あれば空文字)。以前は「イメージが無ければ500エラーでdocker buildを案内する」
+    # だったが、Docker Hubにイメージを公開したことで、初回ビルド時に自動で取ってくる
+    # ようにした。pullはBackgroundJobの中で走るので、進捗はビルドログにそのまま出る
+    # (数GBあるのでHTTPリクエストの中で同期的にpullするとタイムアウトしてしまう)。
+    # pullに失敗したら(未公開のバージョン・オフライン等)、自分でビルドする方法を
+    # ログに出して終了する。
+    def builder_image_pull_command(family)
+      return "" if builder_image_available?(family)
 
-      image = BUILDER_IMAGES.fetch(family)
-      json_error(500, "ビルド用イメージ #{image} が見つかりません。" \
-        "picorideのディレクトリで docker build -t #{image} #{BUILDER_DOCKERFILE_DIRS.fetch(family)} を実行してください")
+      image = Shellwords.escape(BUILDER_IMAGES.fetch(family))
+      found_msg = Shellwords.escape("==> ビルド用イメージ #{BUILDER_IMAGES.fetch(family)} が手元に無いので " \
+        "docker pull します(初回のみ。数GBあるので時間がかかります)")
+      fail_msg = Shellwords.escape("==> docker pull に失敗しました。ネットワークを確認するか、" \
+        "自分でビルドしてください: docker build -t #{BUILDER_IMAGES.fetch(family)} " \
+        "#{BUILDER_DOCKERFILE_DIRS.fetch(family)}")
+      "echo #{found_msg}; docker pull #{image} || { echo #{fail_msg}; exit 1; }; "
     end
 
     # R2P2State.ensure_checkout / ensure_pico_checkout は git clone 等に失敗すると
@@ -901,7 +918,6 @@ module Picoride
 
       project_config = read_project_config
       family = platform_family(project_config["platform"])
-      ensure_builder_image!(family)
 
       root = project_root
       state_dir = build_state_dir(root, family)
@@ -1025,7 +1041,6 @@ module Picoride
       json_error(409, "build is running") if BUILD_JOB.running?
 
       family = platform_family(platform)
-      ensure_builder_image!(family)
 
       root = project_root
       state_dir = build_state_dir(root, family)

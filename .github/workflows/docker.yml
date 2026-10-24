@@ -1,0 +1,65 @@
+# ビルド専用Dockerイメージ(docker/esp32・docker/pico)をビルドしてDocker Hubへpushする。
+#
+# - v* のタグ(例: v0.2.0)をpushすると、そのバージョンのイメージ
+#   <namespace>/picoride-builder-{esp32,pico}:<version> と :latest を公開する。
+#   タグとgemのバージョン(lib/picoride/version.rb)が食い違っていたら失敗させる
+#   (picoride gemは自分と同じバージョンのイメージをpullしに行くため)
+# - Actionsタブから手動実行(workflow_dispatch)もできる。この場合は
+#   version.rb のバージョンでpushする
+#
+# 事前にリポジトリの Settings > Secrets and variables > Actions に
+#   DOCKERHUB_USERNAME : Docker Hubのユーザー名
+#   DOCKERHUB_TOKEN    : Docker Hubのアクセストークン(Read & Write)
+# を登録しておくこと。pushする名前空間はgemと同じく
+# Picoride::BuilderImages(既定 youchan、PICORIDE_DOCKER_NAMESPACE で変更)で決まる。
+name: Publish builder images
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        family: [esp32, pico]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+
+      - name: Resolve image tags
+        id: meta
+        run: |
+          version=$(ruby -Ilib -rpicoride/version -e 'print Picoride::VERSION')
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match Picoride::VERSION ${version}"
+            exit 1
+          fi
+          tags=$(ruby -Ilib -rpicoride/builder_images \
+            -e 'puts Picoride::BuilderImages.publish_tags(ARGV[0]).join(",")' "${{ matrix.family }}")
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+          echo "Publishing: ${tags}"
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: docker/${{ matrix.family }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha,scope=${{ matrix.family }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.family }}

@@ -1516,3 +1516,38 @@ IDEは`prod`だけ使う。成果物は `build/r2p2/{vm}/{board}/prod/R2P2-*.uf2
 インターネット接続なしで実行してもビルドが通る(picotool・pico-sdkともイメージ内で
 完結している)。UF2のマジックナンバー・プロジェクトの`mrbgems/`以下のgemが
 リンクされていることも確認した。
+
+## ビルド用イメージをDocker Hubで配布する
+
+「イメージをDocker Hubにpushしておいて、gemを使う人でも`docker pull`すれば
+使えるようにしたい」という要望で追加した。
+
+- イメージ名は`lib/picoride/builder_images.rb`(`Picoride::BuilderImages`)に
+  一本化した。`<namespace>/picoride-builder-{esp32,pico}:<Picoride::VERSION>`
+  (namespace既定`youchan`、`PICORIDE_DOCKER_NAMESPACE`で変更可)。サーバー・
+  Rakefile・GitHub Actionsがすべてここを参照するので、名前がずれない
+- **タグはgemのバージョン**にした(latestを追わない)。サーバー側のビルド手順は
+  イメージの中身(pico-sdkのバージョン、`zip`の有無、`/opt/pico-sdk`の場所など)に
+  依存しているので、古いgemが新しいイメージを掴んで壊れるのを防ぐため。
+  pushするときは`:latest`も付ける
+- サーバーは、イメージが手元に無ければ`docker run`の前に`docker pull`する
+  (`builder_image_pull_command`)。以前は「無ければ500エラーでdocker buildを案内」
+  だった。pullは数GBあり、HTTPリクエストの中で同期的にやるとタイムアウトするので、
+  BackgroundJobのコマンドの先頭に付けてビルドログにそのまま進捗を出す形にした。
+  pullに失敗したら、gem内のDockerfileの絶対パス(`BUILDER_DOCKERFILE_DIRS`)を使った
+  `docker build`コマンドをログに出して終了する
+- 公開手順: `v*`タグのpushで`.github/workflows/docker.yml`が両イメージを
+  linux/amd64・linux/arm64でビルドしてpushする(タグと`Picoride::VERSION`が
+  一致しないと失敗させる)。シークレット`DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`が必要。
+  手元からは`rake docker:push`(buildx、マルチアーキ)/`rake docker:build`
+  (ローカルのみ)/`rake docker:images`(名前の確認)
+- arm64にしたのはApple Silicon Macで使う人のため。`espressif/idf`のv5.x系タグは
+  Docker Hub上でamd64/arm64の両方が提供されている(タグページで確認)。
+  `ubuntu:24.04`も同様。**ただしarm64でのビルドはこのセッションの環境では
+  検証できていない**(Docker HubとQEMUのイメージが取得できなかったため)。
+  初回のpush時にActionsのログで両アーキテクチャが通ることを確認すること
+
+検証したこと: イメージが無いときにpullが走り、失敗時に案内が出て終了すること
+(この環境ではDocker Hubに繋がらないため失敗側だけ確認)/イメージがあるときは
+pullを挟まずにPicoのビルドが最後まで通ること/Rakeタスクが組み立てる
+`docker build`・`docker buildx build`のコマンド(`sh`を差し替えて確認)。

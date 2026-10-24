@@ -11,23 +11,62 @@ This IDE can do as following
 ## Setup
 
 The app itself runs natively on your machine (Ruby). Docker is only used to run
-the firmware builds. There is one builder image per target family; build the
-one(s) you need once up front:
+the firmware builds, so you need Docker installed and running.
 
 ```bash
-bundle install
-docker build -t picoride-builder-esp32 docker/esp32   # ESP32 (ESP-IDF)
-docker build -t picoride-builder-pico  docker/pico    # Raspberry Pi Pico (pico-sdk)
+gem install picoride   # or: bundle install (when working from a clone)
 ```
 
-The server picks the image from the project's target (Settings dialog):
-`esp32*` targets use `picoride-builder-esp32`, `pico` / `pico_w` / `pico2` /
-`pico2_w` use `picoride-builder-pico`. Image names can be overridden with
-`PICORIDE_ESP32_BUILDER_IMAGE` / `PICORIDE_PICO_BUILDER_IMAGE`.
+The builder images are published on Docker Hub, one per target family:
+
+| Target (Settings dialog)                | Image                                       |
+|-----------------------------------------|---------------------------------------------|
+| `esp32*`                                | `youchan/picoride-builder-esp32:<version>`  |
+| `pico` / `pico_w` / `pico2` / `pico2_w` | `youchan/picoride-builder-pico:<version>`   |
+
+`<version>` is the picoride gem version, so a given gem always uses the image it
+was tested with. You don't need to do anything up front: the first build pulls
+the image automatically (progress shows up in the build log; it's a few GB).
+To fetch it ahead of time:
+
+```bash
+docker pull youchan/picoride-builder-pico:0.1.0
+docker pull youchan/picoride-builder-esp32:0.1.0
+```
+
+(`rake docker:images` prints the exact names for your version.)
+
+To use a locally built image instead, set `PICORIDE_ESP32_BUILDER_IMAGE` /
+`PICORIDE_PICO_BUILDER_IMAGE` to its name. If the pull fails (offline, or an
+unreleased version), the build log tells you the `docker build` command to run;
+the Dockerfiles live in `docker/esp32` and `docker/pico` (also inside the
+installed gem).
 
 If PicoRuby bumps its required pico-sdk version, the Pico build stops with
-"pico-sdk X is not checked out!". Rebuild the image with
-`docker build --build-arg PICO_SDK_VERSION=X -t picoride-builder-pico docker/pico`.
+"pico-sdk X is not checked out!". Until a new picoride release ships an updated
+image, build one yourself with
+`docker build --build-arg PICO_SDK_VERSION=X -t my-pico-builder docker/pico`
+and point `PICORIDE_PICO_BUILDER_IMAGE=my-pico-builder` at it.
+
+### Publishing the builder images (maintainers)
+
+Pushing a `v*` tag runs `.github/workflows/docker.yml`, which builds both
+images for `linux/amd64` and `linux/arm64` and pushes `:<version>` and
+`:latest`. The tag must match `Picoride::VERSION`. It needs the repository
+secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access token
+with Read & Write). It can also be run by hand from the Actions tab.
+
+To publish from your own machine instead:
+
+```bash
+docker login
+rake docker:push            # both families, multi-arch
+rake docker:push[pico]      # just one
+rake docker:build           # local build only (current architecture)
+```
+
+`PICORIDE_DOCKER_NAMESPACE` changes the Docker Hub namespace (default
+`youchan`) for both the server and these tasks.
 
 ### Raspberry Pi Pico notes
 

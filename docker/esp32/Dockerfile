@@ -1,6 +1,7 @@
 # ESP32(R2P2-ESP32)用のビルド専用イメージ(移行プラン フェーズ1)。
 #
-#   docker build -t picoride-builder-esp32 docker/esp32
+#   公開版: docker pull youchan/picoride-builder-esp32:<picorideのバージョン>(サーバーが自動でpullする)
+#   ビルド/公開: rake docker:build[esp32] / rake docker:push[esp32](名前は lib/picoride/builder_images.rb)
 #
 # Raspberry Pi Pico用は docker/pico/Dockerfile(別イメージ)。picorideサーバーが
 # プロジェクト設定のターゲットに応じてどちらのイメージで docker run するかを
