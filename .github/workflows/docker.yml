@@ -10,8 +10,8 @@
 # 事前にリポジトリの Settings > Secrets and variables > Actions に
 #   DOCKERHUB_USERNAME : Docker Hubのユーザー名
 #   DOCKERHUB_TOKEN    : Docker Hubのアクセストークン(Read & Write)
-# を登録しておくこと。pushする名前空間はgemと同じく
-# Picoride::BuilderImages(既定 youchan、PICORIDE_DOCKER_NAMESPACE で変更)で決まる。
+# を登録しておくこと。イメージ名・タグは rakelib/docker.rake(docker:tags)が
+# lib/picoride/version.rb の BUILDER_IMAGE_PREFIX と VERSION から決める。
 name: Publish builder images
 
 on:
@@ -41,8 +41,7 @@ jobs:
             echo "::error::tag ${GITHUB_REF_NAME} does not match Picoride::VERSION ${version}"
             exit 1
           fi
-          tags=$(ruby -Ilib -rpicoride/builder_images \
-            -e 'puts Picoride::BuilderImages.publish_tags(ARGV[0]).join(",")' "${{ matrix.family }}")
+          tags=$(rake "docker:tags[${{ matrix.family }}]")
           echo "tags=${tags}" >> "$GITHUB_OUTPUT"
           echo "Publishing: ${tags}"
 

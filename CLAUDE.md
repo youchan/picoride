@@ -1522,10 +1522,22 @@ IDEは`prod`だけ使う。成果物は `build/r2p2/{vm}/{board}/prod/R2P2-*.uf2
 「イメージをDocker Hubにpushしておいて、gemを使う人でも`docker pull`すれば
 使えるようにしたい」という要望で追加した。
 
-- イメージ名は`lib/picoride/builder_images.rb`(`Picoride::BuilderImages`)に
-  一本化した。`<namespace>/picoride-builder-{esp32,pico}:<Picoride::VERSION>`
-  (namespace既定`youchan`、`PICORIDE_DOCKER_NAMESPACE`で変更可)。サーバー・
-  Rakefile・GitHub Actionsがすべてここを参照するので、名前がずれない
+- イメージ名は`<Picoride::BUILDER_IMAGE_PREFIX>-{esp32,pico}:<Picoride::VERSION>`
+  (`lib/picoride/version.rb`、接頭辞は`youchan/picoride-builder`)。
+  **gemに入る部分と入らない部分を分けてある**:
+  - gemに入る(実行時に必要): 接頭辞とバージョン(`version.rb`)、それを組み立てる
+    `server.rb`の`BUILDER_IMAGES`(`PICORIDE_{ESP32,PICO}_BUILDER_IMAGE`で上書き可)
+  - gemに入らない(公開用): `rakelib/docker.rake`(`docker:images`/`tags`/`build`/
+    `push`。Rakeが`rakelib/*.rake`を自動で読み込む)。gemspecで`rakelib/`を除外。
+    GitHub Actionsは`rake "docker:tags[<family>]"`でタグを得る。
+    フォーク用に`IMAGE_PREFIX`で接頭辞を差し替えられる
+  - 最初は`lib/picoride/builder_images.rb`という1モジュールにまとめていたが、
+    公開用のコード(タグ一覧・Dockerfileのパス)までgemに入ってしまうので、
+    上のように分けた(ユーザーからのフィードバック)
+- **タグのpush漏れに注意**: `v0.1.0`タグを古いコミットに打ったまま`main`だけ
+  更新していたため、Actionsが`builder_images.rb`の無いスナップショットを
+  ビルドして`LoadError`になった。直したコミットにタグを付け直して
+  (`git tag -f vX && git push -f origin vX`)から再実行すること
 - **タグはgemのバージョン**にした(latestを追わない)。サーバー側のビルド手順は
   イメージの中身(pico-sdkのバージョン、`zip`の有無、`/opt/pico-sdk`の場所など)に
   依存しているので、古いgemが新しいイメージを掴んで壊れるのを防ぐため。

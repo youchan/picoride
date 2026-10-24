@@ -65,8 +65,10 @@ rake docker:push[pico]      # just one
 rake docker:build           # local build only (current architecture)
 ```
 
-`PICORIDE_DOCKER_NAMESPACE` changes the Docker Hub namespace (default
-`youchan`) for both the server and these tasks.
+These tasks live in `rakelib/docker.rake`, which is not shipped in the gem.
+The image name prefix (`youchan/picoride-builder`) is `Picoride::BUILDER_IMAGE_PREFIX`
+in `lib/picoride/version.rb`; `IMAGE_PREFIX=...` overrides it for publishing
+(e.g. from a fork).
 
 ### Raspberry Pi Pico notes
 

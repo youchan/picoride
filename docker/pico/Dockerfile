@@ -1,7 +1,7 @@
 # Raspberry Pi Pico(R2P2)用のビルド専用イメージ。
 #
 #   公開版: docker pull youchan/picoride-builder-pico:<picorideのバージョン>(サーバーが自動でpullする)
-#   ビルド/公開: rake docker:build[pico] / rake docker:push[pico](名前は lib/picoride/builder_images.rb)
+#   ビルド/公開: rake docker:build[pico] / rake docker:push[pico](rakelib/docker.rake)
 #
 # ESP32用(docker/esp32/Dockerfile)と同じく、ツールチェインだけを持つ使い捨て
 # コンテナ用のイメージ。picorideサーバーがプロジェクト設定のターゲットが

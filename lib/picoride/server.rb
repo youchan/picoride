@@ -9,7 +9,7 @@ require "uri"
 require_relative "background_job"
 require_relative "r2p2_state"
 require_relative "project_store"
-require_relative "builder_images"
+require_relative "version"
 
 module Picoride
   class Server < Sinatra::Base
@@ -96,17 +96,25 @@ module Picoride
     DEFAULT_PLATFORM_FAMILY = "esp32"
 
     # ファミリーごとのビルド専用イメージ(docker/esp32/Dockerfile・docker/pico/Dockerfile)。
-    # 名前はBuilderImagesで一か所に決めてある(Docker Hubの
-    # `youchan/picoride-builder-{esp32,pico}:<gemのバージョン>`。環境変数で上書き可)。
-    # 手元に無ければビルド開始時に自動で`docker pull`する(builder_docker_command)ので、
-    # gemを使う人がDockerfileからイメージをビルドする必要はない。
-    BUILDER_IMAGES = BuilderImages::FAMILIES.to_h { |family| [family, BuilderImages.image(family)] }.freeze
+    # Docker Hubの `youchan/picoride-builder-{esp32,pico}:<gemのバージョン>`
+    # (接頭辞は version.rb の BUILDER_IMAGE_PREFIX)。自分でビルドしたイメージを
+    # 使いたい場合は環境変数で丸ごと上書きできる(ESP32側は旧来の
+    # PICORUBY_BUILDER_IMAGEも引き続き効く)。手元に無ければビルド開始時に自動で
+    # `docker pull`する(builder_image_pull_command)ので、gemを使う人が
+    # Dockerfileからイメージをビルドする必要はない。
+    #
+    # イメージの公開(タグ一覧・push)はgemに含めない rakelib/docker.rake の担当。
+    BUILDER_IMAGES = {
+      "esp32" => ENV["PICORIDE_ESP32_BUILDER_IMAGE"] || ENV["PICORUBY_BUILDER_IMAGE"] ||
+                 "#{BUILDER_IMAGE_PREFIX}-esp32:#{VERSION}",
+      "pico" => ENV["PICORIDE_PICO_BUILDER_IMAGE"] || "#{BUILDER_IMAGE_PREFIX}-pico:#{VERSION}"
+    }.freeze
 
     # pullできなかったとき(未公開のバージョン・オフライン等)に案内する、
-    # 自分でビルドする場合のDockerfileのディレクトリ。gemとしてインストールされた
-    # 場合もgemの中にdocker/が同梱されるので、絶対パスで案内する。
-    BUILDER_DOCKERFILE_DIRS = BuilderImages::FAMILIES.to_h do |family|
-      [family, File.expand_path("../../#{BuilderImages.dockerfile_dir(family)}", __dir__)]
+    # 自分でビルドする場合のDockerfileのディレクトリ。docker/ はgemにも
+    # 同梱されるので、gemとしてインストールした場合もこの絶対パスで案内できる。
+    BUILDER_DOCKERFILE_DIRS = BUILDER_IMAGES.keys.to_h do |family|
+      [family, File.expand_path("../../docker/#{family}", __dir__)]
     end.freeze
 
     # ビルド専用コンテナの中で、プロジェクト本体・ビルド状態(R2P2-ESP32または
