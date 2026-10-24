@@ -77,18 +77,41 @@ module Picoride
     # 特別なフィルタ処理を書かなくてもUI上には出てこない。
     R2P2_STATE_DIRNAME = ".r2p2-esp32"
 
-    # idf.py build / rake setup_xxx を実行するビルド専用イメージ(Dockerfile参照)。
-    # `docker build -t #{BUILDER_IMAGE} .` で事前にビルドしておく必要がある。
-    BUILDER_IMAGE = ENV.fetch("PICORUBY_BUILDER_IMAGE", "picoride-builder")
+    # Raspberry Pi Pico用のビルド状態(picoruby本体のチェックアウト。R2P2は
+    # picorubyに`picoruby-r2p2` gemとして統合されたため。r2p2_state.rb参照)。
+    # ESP32用と同じ理由でプロジェクト直下のドット始まりのディレクトリにしてある。
+    PICO_STATE_DIRNAME = ".r2p2-pico"
 
-    # ビルド専用コンテナの中で、プロジェクト本体・R2P2-ESP32の状態をそれぞれ
-    # bind mountする先の固定パス。ホスト側の実パスとコンテナ内パスの対応は
-    # この2つの定数を通じて一箇所にまとめておく(r2p2_docker_command参照)。
+    # ターゲット(設定ダイアログの「ターゲット」)をファミリーごとに分けたもの。
+    # ファミリーによって使うビルド用イメージ・状態ディレクトリ・ビルド手順が切り替わる。
+    PLATFORM_FAMILIES = {
+      "esp32" => %w[esp32 esp32c3 esp32c6 esp32h2 esp32p4 esp32s3],
+      "pico" => %w[pico pico_w pico2 pico2_w]
+    }.freeze
+    PLATFORM_TARGETS = PLATFORM_FAMILIES.values.flatten.freeze
+
+    # ターゲット未設定のプロジェクトは従来通りESP32として扱う(Pico対応以前に
+    # 作られたプロジェクトの挙動を変えないため)。
+    DEFAULT_PLATFORM_FAMILY = "esp32"
+
+    # ファミリーごとのビルド専用イメージ(docker/esp32/Dockerfile・docker/pico/Dockerfile)。
+    # どちらも事前に`docker build`しておく必要がある(BUILDER_DOCKERFILE_DIRS参照)。
+    # ESP32側は旧来の環境変数PICORUBY_BUILDER_IMAGEでも上書きできるようにしてある。
+    BUILDER_IMAGES = {
+      "esp32" => ENV["PICORIDE_ESP32_BUILDER_IMAGE"] || ENV["PICORUBY_BUILDER_IMAGE"] || "picoride-builder-esp32",
+      "pico" => ENV["PICORIDE_PICO_BUILDER_IMAGE"] || "picoride-builder-pico"
+    }.freeze
+    BUILDER_DOCKERFILE_DIRS = { "esp32" => "docker/esp32", "pico" => "docker/pico" }.freeze
+
+    # ビルド専用コンテナの中で、プロジェクト本体・ビルド状態(R2P2-ESP32または
+    # picoruby)をそれぞれbind mountする先の固定パス。ホスト側の実パスとコンテナ内
+    # パスの対応はこれらの定数を通じて一箇所にまとめておく(builder_docker_command参照)。
     CONTAINER_PROJECT_MOUNT = "/project_src"
     CONTAINER_R2P2_MOUNT = "/R2P2-ESP32"
+    CONTAINER_PICORUBY_MOUNT = "/picoruby"
+    CONTAINER_STATE_MOUNTS = { "esp32" => CONTAINER_R2P2_MOUNT, "pico" => CONTAINER_PICORUBY_MOUNT }.freeze
 
     ALLOWED_EXTENSIONS = %w[.rb .c .h .rake].freeze
-    PLATFORM_TARGETS = %w[esp32 esp32c3 esp32c6 esp32h2 esp32p4 esp32s3].freeze
 
     # mrbgem名として許可する文字種。ディレクトリ名としてそのまま使うので、
     # パストラバーサルや意図しない特殊文字を避けるため英数字・アンダースコア・
@@ -155,12 +178,30 @@ module Picoride
         File.join(root, R2P2_STATE_DIRNAME)
       end
 
+      # ターゲット名 → ファミリー("esp32"/"pico")。未設定はDEFAULT_PLATFORM_FAMILY。
+      def platform_family(platform)
+        return DEFAULT_PLATFORM_FAMILY if platform.to_s.empty?
+
+        PLATFORM_FAMILIES.each { |family, targets| return family if targets.include?(platform) }
+        DEFAULT_PLATFORM_FAMILY
+      end
+
+      # 現在のプロジェクト設定のファミリー。
+      def current_platform_family
+        platform_family(read_project_config["platform"])
+      end
+
+      # ファミリーごとのビルド状態ディレクトリの絶対パス。
+      def build_state_dir(root, family)
+        File.join(root, family == "pico" ? PICO_STATE_DIRNAME : R2P2_STATE_DIRNAME)
+      end
+
       # .gitignoreを(プロジェクト内に無ければ作成、あれば足りない行だけ追記して)
       # 用意する。R2P2-ESP32の状態やビルド生成物をプロジェクトのgit管理に含めたくない、
       # という要望から、プロジェクトの中に状態を置くようにした以上セットで必要になる。
       # 既存の.gitignoreの中身(ユーザー自身が書いた分)は壊さない。
       def ensure_project_gitignore(root)
-        entries = ["#{R2P2_STATE_DIRNAME}/", GENERATED_BUILD_CONFIG_FILENAME]
+        entries = ["#{R2P2_STATE_DIRNAME}/", "#{PICO_STATE_DIRNAME}/", GENERATED_BUILD_CONFIG_FILENAME]
         path = File.join(root, ".gitignore")
         existing = File.file?(path) ? File.read(path) : ""
         existing_lines = existing.lines.map(&:chomp)
@@ -625,6 +666,9 @@ module Picoride
 
       vm = payload["vm"]
       json_error(400, "invalid vm") if vm && !BUILD_VM_FLAGS.key?(vm)
+      if vm && platform_family(platform) == "pico" && !PICO_BOARD_VMS.fetch(platform).include?(vm)
+        json_error(400, "#{platform} では #{vm} を使えません(使えるVM: #{PICO_BOARD_VMS.fetch(platform).join(', ')})")
+      end
 
       config = { "platform" => platform, "vm" => vm, "usb_console" => payload["usb_console"] == true }
       self.class.project_settings = project_settings.merge(project_root => config)
@@ -700,7 +744,7 @@ module Picoride
       lines = ["# picoride が自動生成する部分(#{MRBGEMS_DIRNAME}/以下のgemを追加する)"]
       project_mrbgem_names(root).each do |name|
         # gemdirはビルドコンテナの中から見たパス(CONTAINER_PROJECT_MOUNT配下)で書く。
-        # ホスト側の実パスではない点に注意(r2p2_docker_commandでproject_srcとしてマウントする)。
+        # ホスト側の実パスではない点に注意(builder_docker_commandでproject_srcとしてマウントする)。
         container_path = File.join(CONTAINER_PROJECT_MOUNT, MRBGEMS_DIRNAME, name)
         lines << "conf.gem gemdir: #{container_path.inspect}"
       end
@@ -715,13 +759,15 @@ module Picoride
       lines.join("\n") + "\n"
     end
 
-    # ビルド専用コンテナ(BUILDER_IMAGE)を使い捨てで起動し、その中でinner_cmdを
-    # 実行するコマンド文字列を組み立てる。state_dir(プロジェクトごとのR2P2-ESP32状態)を
-    # CONTAINER_R2P2_MOUNTに、project_root(mrbgems/やapp/を含むプロジェクト本体)を
-    # CONTAINER_PROJECT_MOUNTにbind mountする。
+    # ビルド専用コンテナ(ファミリーごとのBUILDER_IMAGES)を使い捨てで起動し、
+    # その中でinner_cmdを実行するコマンド文字列を組み立てる。state_dir(プロジェクト
+    # ごとのビルド状態。ESP32ならR2P2-ESP32、Picoならpicoruby本体)を
+    # CONTAINER_STATE_MOUNTS[family]に、project_root(mrbgems/やapp/を含む
+    # プロジェクト本体)をCONTAINER_PROJECT_MOUNTにbind mountする。
     #
-    # idf.py / rake は ESP-IDF の export.sh を読み込んだシェルでしか使えないため、
-    # コンテナ内で明示的に読み込んでから inner_cmd を実行する。
+    # ESP32では idf.py / rake が ESP-IDF の export.sh を読み込んだシェルでしか
+    # 使えないため、コンテナ内で明示的に読み込んでから inner_cmd を実行する
+    # (Pico用イメージはPATH・PICO_SDK_PATHがENVで設定済みなので不要)。
     #
     # コンテナは(`--user`を付けず)デフォルトのrootで動かす。rakelib/setup.rakeが
     # 内部で呼ぶ`bundle install`がシステムのgemディレクトリ(/var/lib/gems/...)へ
@@ -733,35 +779,50 @@ module Picoride
     # (`;`でつないでinner_cmdの成否に関わらず実行し、`inner_cmd`自体の終了コードは
     # `$?`で保持して最後に`exit`し直すことで、chown自体の成否でBUILD_JOBの成功/失敗
     # 判定が変わらないようにしている)。
-    def r2p2_docker_command(state_dir, project_dir, inner_cmd)
+    def builder_docker_command(family, state_dir, project_dir, inner_cmd)
+      state_mount = CONTAINER_STATE_MOUNTS.fetch(family)
       chown_target = "#{Process.uid}:#{Process.gid}"
+      env_setup = family == "esp32" ? ". \"$IDF_PATH/export.sh\" > /dev/null && " : ""
       full_inner_cmd =
-        ". \"$IDF_PATH/export.sh\" > /dev/null && cd #{Shellwords.escape(CONTAINER_R2P2_MOUNT)} && " \
+        "#{env_setup}cd #{Shellwords.escape(state_mount)} && " \
         "#{inner_cmd}; " \
         "exit_code=$?; " \
-        "chown -R #{chown_target} #{Shellwords.escape(CONTAINER_R2P2_MOUNT)}; " \
+        "chown -R #{chown_target} #{Shellwords.escape(state_mount)}; " \
         "exit $exit_code"
 
       "docker run --rm " \
-        "-v #{Shellwords.escape(state_dir)}:#{CONTAINER_R2P2_MOUNT} " \
+        "-v #{Shellwords.escape(state_dir)}:#{state_mount} " \
         "-v #{Shellwords.escape(project_dir)}:#{CONTAINER_PROJECT_MOUNT} " \
-        "#{Shellwords.escape(BUILDER_IMAGE)} " \
+        "#{Shellwords.escape(BUILDER_IMAGES.fetch(family))} " \
         "bash -c #{Shellwords.escape(full_inner_cmd)}"
     end
 
-    # BUILDER_IMAGEがローカルに存在するかどうか。無いままdocker runすると
+    # ファミリーのビルド用イメージがローカルに存在するかどうか。無いままdocker runすると
     # 分かりにくいエラーになるので、事前にチェックして案内を出せるようにする。
-    def builder_image_available?
-      system("docker", "image", "inspect", BUILDER_IMAGE, out: File::NULL, err: File::NULL)
+    def builder_image_available?(family)
+      system("docker", "image", "inspect", BUILDER_IMAGES.fetch(family), out: File::NULL, err: File::NULL)
     end
 
-    # R2P2State.ensure_checkout は git clone 等に失敗すると例外を投げる
-    # (R2P2State.run! 参照)。Sinatraのリクエストハンドラ内で素通しすると生の500に
-    # なってしまうので、json_errorでラップする。
-    def ensure_r2p2_checkout!(state_dir)
-      R2P2State.ensure_checkout(state_dir)
+    def ensure_builder_image!(family)
+      return if builder_image_available?(family)
+
+      image = BUILDER_IMAGES.fetch(family)
+      json_error(500, "ビルド用イメージ #{image} が見つかりません。" \
+        "picorideのディレクトリで docker build -t #{image} #{BUILDER_DOCKERFILE_DIRS.fetch(family)} を実行してください")
+    end
+
+    # R2P2State.ensure_checkout / ensure_pico_checkout は git clone 等に失敗すると
+    # 例外を投げる(R2P2State.run! 参照)。Sinatraのリクエストハンドラ内で素通しすると
+    # 生の500になってしまうので、json_errorでラップする。
+    def ensure_build_checkout!(family, state_dir)
+      if family == "pico"
+        R2P2State.ensure_pico_checkout(state_dir)
+      else
+        R2P2State.ensure_checkout(state_dir)
+      end
     rescue StandardError => e
-      json_error(500, "R2P2-ESP32のセットアップに失敗しました: #{e.message}")
+      name = family == "pico" ? "picoruby(R2P2)" : "R2P2-ESP32"
+      json_error(500, "#{name}のセットアップに失敗しました: #{e.message}")
     end
 
     # R2P2-ESP32 のビルド状態(実行中/成功/失敗/未実行)とログを返す。
@@ -773,6 +834,19 @@ module Picoride
 
     # idf.py build -DPICORB_VM=xxx に渡すフラグ(R2P2-ESP32/Rakefile の PICORB_VMS と同じ対応)。
     BUILD_VM_FLAGS = { "femtoruby" => "mrubyc", "picoruby" => "mruby" }.freeze
+
+    # Pico各ボードで使えるVM(picoruby/build_config/r2p2-{vm}-{board}.rb が存在する組み合わせ。
+    # RP2040(pico/pico_w)はmruby VMのビルド設定が無い)。先頭がVM未指定時の既定値。
+    PICO_BOARD_VMS = {
+      "pico" => %w[femtoruby],
+      "pico_w" => %w[femtoruby],
+      "pico2" => %w[femtoruby picoruby],
+      "pico2_w" => %w[femtoruby picoruby]
+    }.freeze
+
+    # Picoのビルドモード(`rake r2p2:{vm}:{board}:{mode}`のmode)。IDEからは
+    # 配布用のprodだけを使う(debugはUART経由のデバッグ出力等、開発者向け)。
+    PICO_BUILD_MODE = "prod"
 
     # 外部USB-UART変換チップを持たないボード向けの設定フラグメント
     # (R2P2-ESP32/sdkconfigs/usb_console、README.md「Hardware-specific Configuration」参照)。
@@ -787,33 +861,110 @@ module Picoride
       File.foreach(sdkconfig_path).any? { |line| line.start_with?("CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y") }
     end
 
-    # R2P2-ESP32 のビルド(idf.py build)をバックグラウンドで開始する。
+    # Picoのボード・VM設定(未指定VMは既定値)を解決する。不正な組み合わせなら400。
+    def pico_board_and_vm!(config)
+      board = config["platform"]
+      vms = PICO_BOARD_VMS.fetch(board)
+      vm = config["vm"] || vms.first
+      json_error(400, "#{board} では #{vm} を使えません(使えるVM: #{vms.join(', ')})") unless vms.include?(vm)
+      [board, vm]
+    end
+
+    # mrbgems/以下の現在の一覧とbuild_config.rbから、実際にビルドへ渡す
+    # ファイルをビルドのたびに作り直す(generated_build_config_content参照)。
+    # 戻り値はPROJECT_BUILD_CONFIGに渡す「コンテナ内から見たパス」の代入文
+    # (ホスト側の実パスではない)。
+    def prepare_project_build_config(root)
+      generated_build_config = File.join(root, GENERATED_BUILD_CONFIG_FILENAME)
+      File.write(generated_build_config, generated_build_config_content(root))
+      container_build_config = File.join(CONTAINER_PROJECT_MOUNT, GENERATED_BUILD_CONFIG_FILENAME)
+      "PROJECT_BUILD_CONFIG=#{Shellwords.escape(container_build_config)}"
+    end
+
+    # ビルドをバックグラウンドで開始する。
     # 実行中に重ねて叩かれた場合は 409 を返す(同時に複数走らせない)。
-    # VM・USB Consoleはリクエストでは受け取らず、現在のプロジェクトの設定
+    # ターゲット・VM・USB Consoleはリクエストでは受け取らず、現在のプロジェクトの設定
     # (read_project_config、`~/.picoride/project.toml`から読む)に保存されている
-    # 値をそのまま使う。R2P2-ESP32の状態はプロジェクトごとに独立している
-    # (r2p2_state_dir)ので、初回はここでgit clone(R2P2State.ensure_checkout)が
+    # 値をそのまま使う。ターゲットのファミリー(ESP32/Pico)によって、使うビルド用
+    # イメージ・状態ディレクトリ・ビルド手順が切り替わる。ビルド状態はプロジェクトごとに
+    # 独立している(build_state_dir)ので、初回はここでgit clone(R2P2State)が
     # 走り、数分かかることがある。
     post "/api/build" do
       content_type :json
 
       # BUILD_JOB/PLATFORM_JOBは別々のロックなので、これが無いと「ビルド中に別の
       # リクエストでプラットフォームセットアップ(rake setup_xxxのdeep_clean)を始める」
-      # ことを防げず、同じプロジェクトのR2P2-ESP32状態ディレクトリを2つのdocker run
+      # ことを防げず、同じプロジェクトのビルド状態ディレクトリを2つのdocker run
       # コンテナが同時に書き換えてしまう(実際に発生し、ビルド中のファイルが
       # セットアップのdeep_cleanで消えてErrno::ENOENTになった)。
       json_error(409, "platform setup is running") if PLATFORM_JOB.running?
 
-      unless builder_image_available?
-        json_error(500, "ビルド用イメージ #{BUILDER_IMAGE} が見つかりません。" \
-          "docker build -t #{BUILDER_IMAGE} . を実行してください")
-      end
+      project_config = read_project_config
+      family = platform_family(project_config["platform"])
+      ensure_builder_image!(family)
 
       root = project_root
-      state_dir = r2p2_state_dir(root)
+      state_dir = build_state_dir(root, family)
       ensure_project_gitignore(root)
-      ensure_r2p2_checkout!(state_dir)
+      ensure_build_checkout!(family, state_dir)
 
+      inner_cmd =
+        if family == "pico"
+          pico_build_inner_command(root, project_config)
+        else
+          esp32_build_inner_command(root, state_dir, project_config)
+        end
+
+      started = BUILD_JOB.start(builder_docker_command(family, state_dir, root, inner_cmd))
+      json_error(409, "build already running") unless started
+
+      { status: "ok" }.to_json
+    end
+
+    # Pico: picorubyの`rake r2p2:{vm}:{board}:prod`(mruby/cのライブラリビルド +
+    # pico-sdkのcmakeビルド)を実行する。成果物の.uf2は
+    # build/r2p2/{vm}/{board}/prod/ にできる(pico_uf2_path参照)。
+    #
+    # ESP32と違い、app/以下をファームウェアに焼き込む仕組みは無い(R2P2はPicoの
+    # フラッシュをUSBマスストレージとして見せる方式で、ストレージのイメージを
+    # ビルド時に作らない)。app/はターミナルタブの「app/ をアップロード」
+    # (PicoModem)で書き込む。
+    #
+    # r2p2のcmakeはmain_task.rbのコンパイルに`<picoruby>/bin/mrbc`を使うが、
+    # cloneしたばかりのpicorubyにはこれが無く、r2p2タスク自体も作らない
+    # (`/picoruby/bin/mrbc: not found`で失敗することを実際のビルドで確認した)。
+    # mrbcはVMに依存しないスタンドアロンのコンパイラなので、無ければ先に
+    # build_config/mrbc.rb で1回だけビルドする(bin/mrbcへのシンボリックリンクができる)。
+    def pico_build_inner_command(root, project_config)
+      board, vm = pico_board_and_vm!(project_config)
+      "#{PICO_PREPARE_COMMAND} && " \
+        "{ [ -x bin/mrbc ] || MRUBY_CONFIG=build_config/mrbc.rb rake; } && " \
+        "#{prepare_project_build_config(root)} rake r2p2:#{vm}:#{board}:#{PICO_BUILD_MODE}"
+    end
+
+    # Wi-Fi付きボード(pico_w/pico2_w)のbuild_configが使うpicoruby-socket・
+    # picoruby-mbedtlsは、lwIP・mbedTLSをpicoruby側のpico-sdkサブモジュール
+    # (mrbgems/picoruby-r2p2/lib/pico-sdk/lib/{lwip,mbedtls})へのシンボリックリンク
+    # 経由で参照する。このサブモジュールはcloneしていない(pico-sdkはイメージ側の
+    # /opt/pico-sdkを使う。r2p2_state.rb参照)ので、コンテナ内でそのパスを
+    # $PICO_SDK_PATHへのシンボリックリンクにしておく(無いと
+    # `lwip/opt.h: No such file or directory`で失敗することを実際のビルドで確認した)。
+    # リンク先はコンテナ内のパスなので、ホスト側から見るとリンク切れになるが害は無い。
+    # `rake ...:clean`もbuild_configを読み込む(picoruby-socketのmrbgem.rakeは
+    # リンク切れだと例外を投げる)ので、セットアップでも同じ準備をする。
+    PICO_SDK_SUBMODULE_PATH = "mrbgems/picoruby-r2p2/lib/pico-sdk"
+    #
+    # 「中身があるか」ではなく「シンボリックリンクかどうか」で判定する。picoruby-mbedtlsの
+    # mrbgem.rakeは、リンク先が無いと自分でpico-sdkサブモジュールとその中のmbedtls
+    # だけをgit submodule update --initしてしまう(lwipは取らない)ので、一度でも
+    # その状態になると「ディレクトリはあるがlwipが空」になって中身チェックをすり抜ける
+    # (実際に起きた)。
+    PICO_PREPARE_COMMAND =
+      "{ [ -L #{PICO_SDK_SUBMODULE_PATH} ] || " \
+      "{ rm -rf #{PICO_SDK_SUBMODULE_PATH} && ln -s \"$PICO_SDK_PATH\" #{PICO_SDK_SUBMODULE_PATH}; }; }"
+
+    # ESP32: idf.py build。
+    def esp32_build_inner_command(root, state_dir, project_config)
       # プロジェクトのapp/以下を実機の起動スクリプトにする(storage/home/を参照する
       # R2P2本来の仕組み。詳細は上のコメント参照)。前回このプロジェクトをビルドした
       # ときの残骸が残らないよう、まずstorage/home/を空にしてからコピーし直す。
@@ -825,20 +976,13 @@ module Picoride
         FileUtils.cp_r(Dir.glob(File.join(project_app_dir, "*")), storage_home_dir)
       end
 
-      project_config = read_project_config
       vm = project_config["vm"]
       usb_console = project_config["usb_console"]
 
       build_cmd = +"idf.py build"
       build_cmd << " -DPICORB_VM=#{BUILD_VM_FLAGS[vm]}" if vm
 
-      # mrbgems/以下の現在の一覧とbuild_config.rbから、実際にR2P2-ESP32へ渡す
-      # ファイルをビルドのたびに作り直す(generated_build_config_content参照)。
-      # PROJECT_BUILD_CONFIGにはコンテナ内から見たパスを渡す(ホスト側の実パスではない)。
-      generated_build_config = File.join(root, GENERATED_BUILD_CONFIG_FILENAME)
-      File.write(generated_build_config, generated_build_config_content(root))
-      container_build_config = File.join(CONTAINER_PROJECT_MOUNT, GENERATED_BUILD_CONFIG_FILENAME)
-      env_assignments = ["PROJECT_BUILD_CONFIG=#{Shellwords.escape(container_build_config)}"]
+      env_assignments = [prepare_project_build_config(root)]
 
       if usb_console != sdkconfig_has_usb_console?(state_dir)
         # SDKCONFIG_DEFAULTS は sdkconfig ファイルが無いときにしか読まれない仕組みなので、
@@ -848,15 +992,10 @@ module Picoride
         # 値が変わらない限りはこのクリーンビルドを避け、従来通りの差分ビルドのままにする。
         sdkconfig_defaults = usb_console ? USB_CONSOLE_SDKCONFIG_DEFAULTS : "sdkconfig.defaults"
         env_assignments << "SDKCONFIG_DEFAULTS=#{Shellwords.escape(sdkconfig_defaults)}"
-        inner_cmd = "rm -f sdkconfig && #{env_assignments.join(' ')} #{build_cmd}"
+        "rm -f sdkconfig && #{env_assignments.join(' ')} #{build_cmd}"
       else
-        inner_cmd = env_assignments.empty? ? build_cmd : "#{env_assignments.join(' ')} #{build_cmd}"
+        "#{env_assignments.join(' ')} #{build_cmd}"
       end
-
-      started = BUILD_JOB.start(r2p2_docker_command(state_dir, root, inner_cmd))
-      json_error(409, "build already running") unless started
-
-      { status: "ok" }.to_json
     end
 
     # プラットフォーム(ターゲットチップ)セットアップの実行状態とログを返す。
@@ -865,31 +1004,43 @@ module Picoride
       PLATFORM_JOB.to_response_json
     end
 
-    # 現在のプロジェクトの設定に設定されているターゲットへ向けて
-    # `rake setup_#{platform}` をバックグラウンドで実行する。ターゲット自体は
-    # リクエストでは受け取らず、設定ダイアログで保存された値を使う。
-    # setup_esp32xxx は deep_clean + setup(mrubyの再ビルド) + idf.py set-target という
-    # 重い処理の直列実行(R2P2-ESP32/rakelib/setup.rake参照)。
+    # 現在のプロジェクトの設定に設定されているターゲットのセットアップを
+    # バックグラウンドで実行する。ターゲット自体はリクエストでは受け取らず、
+    # 設定ダイアログで保存された値を使う。
+    #
+    # - ESP32: `rake setup_#{platform}`。deep_clean + setup(mrubyの再ビルド) +
+    #   idf.py set-target という重い処理の直列実行(R2P2-ESP32/rakelib/setup.rake参照)。
+    # - Pico: `rake r2p2:{vm}:{board}:clean`。Picoはボード×VMごとにビルド
+    #   ディレクトリが分かれていてターゲット切り替えの準備は不要なので、
+    #   「そのボードのビルド成果物を消してクリーンな状態からビルドし直せるようにする」
+    #   だけ(picorubyのチェックアウト自体はensure_build_checkout!で行われる)。
     post "/api/platform" do
       content_type :json
 
-      platform = read_project_config["platform"]
+      project_config = read_project_config
+      platform = project_config["platform"]
       json_error(400, "platform is not configured for this project") if platform.to_s.empty?
 
       # BUILD_JOBとの同時実行を防ぐ理由はPOST /api/build側のコメント参照。
       json_error(409, "build is running") if BUILD_JOB.running?
 
-      unless builder_image_available?
-        json_error(500, "ビルド用イメージ #{BUILDER_IMAGE} が見つかりません。" \
-          "docker build -t #{BUILDER_IMAGE} . を実行してください")
-      end
+      family = platform_family(platform)
+      ensure_builder_image!(family)
 
       root = project_root
-      state_dir = r2p2_state_dir(root)
+      state_dir = build_state_dir(root, family)
       ensure_project_gitignore(root)
-      ensure_r2p2_checkout!(state_dir)
+      ensure_build_checkout!(family, state_dir)
 
-      started = PLATFORM_JOB.start(r2p2_docker_command(state_dir, root, "rake setup_#{platform}"))
+      inner_cmd =
+        if family == "pico"
+          board, vm = pico_board_and_vm!(project_config)
+          "#{PICO_PREPARE_COMMAND} && rake r2p2:#{vm}:#{board}:clean"
+        else
+          "rake setup_#{platform}"
+        end
+
+      started = PLATFORM_JOB.start(builder_docker_command(family, state_dir, root, inner_cmd))
       json_error(409, "platform setup already running") unless started
 
       { status: "ok", platform: platform }.to_json
@@ -918,12 +1069,40 @@ module Picoride
       File.join(r2p2_state_dir(root), "build")
     end
 
+    # --- Raspberry Pi Pico のファームウェア(.uf2) ---------------------------
+    #
+    # PicoはESP Web Toolsのような「ブラウザから直接書き込む」仕組みを使わず、
+    # BOOTSELボタンを押しながら接続すると現れるUSBドライブ(RPI-RP2 / RP2350)へ
+    # .uf2をコピーするだけで書き込める。そのためサーバはビルド成果物の.uf2を
+    # ダウンロードさせるだけにしてある(UI側はメニューバーの「UF2をダウンロード」)。
+
+    # 現在のプロジェクト設定(ボード・VM)に対応する最新の.uf2の絶対パス(無ければnil)。
+    # ファイル名にビルド日付・リビジョンが入る(R2P2-FEMTORUBY-<version>-PICO-<date>-<rev>.uf2)
+    # ため過去のビルドの.uf2が残りうるので、更新日時が最も新しいものを選ぶ。
+    def pico_uf2_path(root, board, vm)
+      dir = File.join(build_state_dir(root, "pico"), "build", "r2p2", vm, board, PICO_BUILD_MODE)
+      Dir.glob(File.join(dir, "*.uf2")).max_by { |path| File.mtime(path) }
+    end
+
+    get "/api/firmware/uf2" do
+      project_config = read_project_config
+      json_error(400, "target is not a Raspberry Pi Pico") unless current_platform_family == "pico"
+
+      board, vm = pico_board_and_vm!(project_config)
+      path = pico_uf2_path(project_root, board, vm)
+      json_error(404, "not built yet") unless path
+
+      send_file path, type: "application/octet-stream", disposition: "attachment", filename: File.basename(path)
+    end
+
     # ESP Web Tools 用のマニフェストを、直近のビルド成果物
     # (build/project_description.json の "target" と build/flash_args)から動的に組み立てる。
     # flash_args は `idf.py build` が生成する、esptool write_flash にそのまま渡せる
     # "<オフセット(16進)> <binへの相対パス>" の行の並び(1行目は --flash_mode 等のオプション行)。
     get "/api/firmware/manifest.json" do
       content_type :json
+
+      json_error(400, "target is not an ESP32") unless current_platform_family == "esp32"
 
       root = project_root
       build_dir = firmware_build_dir(root)

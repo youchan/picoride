@@ -27,7 +27,7 @@ class LogPanel < Funicular::Component
   def render
     div(class: 'log-panel') do
       div(class: 'log-panel-header') do
-        render_tab_button('build', 'R2P2-ESP32 Build', :handle_select_build_tab)
+        render_tab_button('build', 'R2P2 Build', :handle_select_build_tab)
         render_tab_button('platform', 'Platform Setup', :handle_select_platform_tab)
         div(class: 'log-panel-spacer')
         span(class: 'platform-target') { props[:selected_platform] || '未選択' } unless build_tab?

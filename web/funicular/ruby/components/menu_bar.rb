@@ -233,11 +233,19 @@ class MenuBar < Funicular::Component
     span(class: "menu-bar-status #{props[:build_status]}") { status_label }
   end
 
-  # 実際の書き込み処理はブラウザのWeb Serial API経由でESP Web Tools
+  # ESP32: 実際の書き込み処理はブラウザのWeb Serial API経由でESP Web Tools
   # (esp-web-install-button カスタム要素)が行う。旧 install_panel.rb と同じ使い方。
+  # Raspberry Pi Pico: ブラウザから直接書き込む仕組みは使わず、ビルド成果物の
+  # .uf2をダウンロードさせる(BOOTSELを押しながら接続して現れるドライブへ
+  # ユーザーがコピーする)。<a download>をボタン風に見せている。
   def render_install_button
     if props[:project].to_s.empty?
       button(class: 'menu-install', disabled: true) { 'デバイスにインストール' }
+    elsif ProjectSettingsDialog.pico?(value_of(props[:project_config], 'platform'))
+      tag(:a, class: 'menu-install menu-download', href: '/api/firmware/uf2', download: '',
+              title: 'BOOTSELボタンを押しながらPicoを接続し、現れたドライブへUF2ファイルをコピーしてください') do
+        'UF2をダウンロード'
+      end
     else
       tag(:'esp-web-install-button', manifest: '/api/firmware/manifest.json') do
         button(slot: 'activate', class: 'menu-install') { 'デバイスにインストール' }

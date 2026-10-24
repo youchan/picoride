@@ -1418,3 +1418,101 @@ UIから開き、その配下の複数プロジェクトから1つを選ぶ」�
 何もしない**(=「間違ったディレクトリを開いた可能性がある」とみなして
 無関係なファイルを生成しない)方式に変更した。新規にdirectory browserで
 「新しいフォルダ」を作ってすぐ開く(=確実に空)という本来の用途は影響を受けない。
+
+## Raspberry Pi Pico 対応(ビルド用Dockerイメージをターゲットで切り替え)
+
+「ESP32用だけでなくRaspberry Pi Pico用のビルド環境も使えるようにしたい。
+Dockerfileを分けてイメージを別にし、picorideサーバーからビルドするときに切り替える。
+設定でPicoを選べるようにしたい」という要望で追加した。
+
+### 構成
+
+- `Dockerfile` は `docker/esp32/Dockerfile`(中身は従来のESP-IDF用そのまま)と
+  `docker/pico/Dockerfile`(新規)に分けた。イメージ名は
+  `picoride-builder-esp32` / `picoride-builder-pico`
+  (`PICORIDE_ESP32_BUILDER_IMAGE` / `PICORIDE_PICO_BUILDER_IMAGE`で上書き可。
+  ESP32側は旧`PICORUBY_BUILDER_IMAGE`も引き続き効く)。**旧イメージ名
+  `picoride-builder`は既定では使われなくなった**ので、ESP32側も作り直しが要る
+- 「ターゲット」設定(`platform`)に `pico` / `pico_w` / `pico2` / `pico2_w` を追加。
+  `server.rb`の`PLATFORM_FAMILIES`でターゲット→ファミリー(`esp32`/`pico`)を
+  引き、`BUILDER_IMAGES`・状態ディレクトリ(`build_state_dir`)・コンテナ内の
+  マウント先(`CONTAINER_STATE_MOUNTS`)・ビルド手順を切り替える。
+  **ターゲット未設定は従来通りESP32扱い**(`DEFAULT_PLATFORM_FAMILY`)
+- `r2p2_docker_command` は `builder_docker_command(family, ...)` に一般化した。
+  `export.sh` のsourceはESP32のときだけ
+
+### R2P2(Pico版)は picoruby 本体に統合されている
+
+`picoruby/R2P2` リポジトリはアーカイブ扱いで、現在は picoruby 本体の
+`mrbgems/picoruby-r2p2` gem + `tasks/picoruby/r2p2.rake` になっている。
+ビルドは picoruby のルートで `rake r2p2:{vm}:{board}:{debug|prod}`
+(vm は `femtoruby`(mruby/c)/ `picoruby`(mruby)。RP2040 の pico/pico_w は
+femtoruby のみ — `build_config/r2p2-{vm}-{board}.rb` があるものだけタスクが定義される)。
+IDEは`prod`だけ使う。成果物は `build/r2p2/{vm}/{board}/prod/R2P2-*.uf2`。
+
+- 状態ディレクトリは `<project>/.r2p2-pico`(picoruby の `--depth 1` clone)。
+  `R2P2State.ensure_pico_checkout` がサブモジュールを取得するが、
+  `mrbgems/picoruby-r2p2/lib/pico-sdk` と `lib/rp2040js`(エミュレータ)は取らない
+- pico-sdk と picotool はイメージ側(`/opt/pico-sdk`、`/usr/local`)に焼き込み。
+  pico-sdk 2.x は**SDKと同じバージョンのpicotoolがインストールされていないと、
+  cmake構成時にGitHubからpicotoolをcloneしてビルドしようとする**ので、
+  イメージで同じタグ(`PICO_SDK_VERSION`)をビルド・installしておく。
+  picorubyの`r2p2:check_pico_sdk`は`git describe --tags --exact-match`で
+  `PICO_SDK_TAG`(`mrbgems/picoruby-r2p2/r2p2_config.rb`)と一致することを要求する
+  (`git clone --depth 1 --branch <tag>`でもタグは取れて一致判定は通る)。
+  picoruby側がSDKを上げたら`--build-arg PICO_SDK_VERSION=...`でイメージを作り直す
+- 完了マーカー `.picoride-ready` で「clone+サブモジュール+パッチまで済んだか」を
+  判定する(ESP32側の「`.git`があれば済」だと、サブモジュール取得で失敗したときに
+  二度と再試行されないため)
+- mrbgem組み込みのフック(`PROJECT_BUILD_CONFIG`)はESP32と同じものを
+  `build_config/r2p2-*.rb` に差し込む(どれも `MRuby::CrossBuild.new(...) do |conf| ... end`)。
+  r2p2.rake は内部で `sh "MRUBY_CONFIG=... rake"` を呼ぶが、環境変数はそのまま
+  子プロセスへ伝わるので追加の細工は不要
+- Bundlerは使わない(r2p2.rakeは素の`rake`を呼ぶだけ)。イメージには apt の
+  `ruby` / `rake` だけ入れている
+
+### ESP32との違い(UI)
+
+- Picoには app/ をファームウェアに焼き込む仕組みが無い(R2P2はフラッシュを
+  USBマスストレージとして見せる方式で、ストレージのイメージをビルド時に作らない)。
+  app/ はターミナルタブの「app/ をアップロード」(PicoModem。Pico版R2P2の
+  シェルにも標準で入っている)で送る
+- 書き込みはESP Web Toolsではなく `.uf2` のダウンロード(`GET /api/firmware/uf2`、
+  メニューバーの「UF2をダウンロード」、`<a download>`をボタン風にしたもの)。
+  BOOTSELを押しながら接続して出てくるドライブへユーザーがコピーする
+- 「セットアップ」は Pico では `rake r2p2:{vm}:{board}:clean`
+  (ボード×VMごとにビルドディレクトリが分かれているのでターゲット切り替えの準備は不要)
+- 設定ダイアログ: ターゲットを `<optgroup>` でESP32/Raspberry Pi Picoに分けた。
+  Picoを選ぶとUSB Consoleの代わりに書き込み方法の説明を出す。VMはボードで
+  選べないもの(pico/pico_wのPicoRuby)を出さず、ターゲット変更で選べなくなったら
+  デフォルトに戻す(`ProjectSettingsDialog.vm_allowed?`)。サーバー側も
+  `PICO_BOARD_VMS`で同じ検証をする(フロントとサーバで同じ表を二重に持っている)
+
+### 実際にビルドして踏んだ罠(Pico)
+
+`docker build` → picorideサーバー経由の`POST /api/build`で実際にビルドを通して
+見つけたもの(どちらも静的チェックでは分からない):
+
+1. **`/picoruby/bin/mrbc: not found`**: r2p2のcmakeは`main_task.rb`のコンパイルに
+   `<picoruby>/bin/mrbc`を使うが、cloneしたばかりのpicorubyには無く、
+   `rake r2p2:...`自体も作らない(r2p2用のbuild_configが作るのは
+   `build/mrbc/default/bin/mrbc`で、`bin/`には置かれない)。mrbcはVM非依存の
+   スタンドアロンコンパイラなので、`pico_build_inner_command`で
+   `[ -x bin/mrbc ] || MRUBY_CONFIG=build_config/mrbc.rb rake` を先に1回実行する
+2. **`zip: No such file or directory`**: r2p2のcmakeはリンク後に`.uf2`を
+   `zip`/`gzip`する。`.uf2`自体はできているのにビルド失敗扱いになるので、
+   イメージに`zip`を入れた
+
+3. **`lwip/opt.h: No such file or directory`(pico_w / pico2_w のみ)**:
+   Wi-Fi付きボードのbuild_configが使う`picoruby-socket`/`picoruby-mbedtls`は、
+   lwIP/mbedTLSを`mrbgems/picoruby-r2p2/lib/pico-sdk/lib/...`への**git管理された
+   シンボリックリンク**経由で参照する。そのサブモジュールはcloneしていないので、
+   ビルド・セットアップの前に`PICO_PREPARE_COMMAND`でそのパスをコンテナ内の
+   `$PICO_SDK_PATH`(/opt/pico-sdk)へのリンクに差し替える。`rake ...:clean`も
+   build_configを読み、`picoruby-socket`のmrbgem.rakeはリンク切れだと例外を
+   投げるので、セットアップ側にも同じ前処理が必要
+
+検証済みの組み合わせ: `pico`(FemtoRuby)と`pico2_w`(PicoRuby)。コンテナは
+インターネット接続なしで実行してもビルドが通る(picotool・pico-sdkともイメージ内で
+完結している)。UF2のマジックナンバー・プロジェクトの`mrbgems/`以下のgemが
+リンクされていることも確認した。

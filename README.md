@@ -1,6 +1,7 @@
-# PicoRuby/FemtoRuby ESP32 IDE
+# PicoRuby/FemtoRuby IDE for ESP32 / Raspberry Pi Pico
 
-This is PicoRuby/FemtoRuby for ESP32 development environment.
+This is PicoRuby/FemtoRuby development environment for ESP32 and Raspberry Pi Pico
+(R2P2-ESP32 / R2P2).
 This IDE can do as following
 
 - Edit source codes(.c .h .rb) for mrbgem as a project
@@ -10,12 +11,33 @@ This IDE can do as following
 ## Setup
 
 The app itself runs natively on your machine (Ruby). Docker is only used to run
-`idf.py build` / `rake setup_xxx`, so it needs to be built once up front:
+the firmware builds. There is one builder image per target family; build the
+one(s) you need once up front:
 
 ```bash
 bundle install
-docker build -t picoride-builder .
+docker build -t picoride-builder-esp32 docker/esp32   # ESP32 (ESP-IDF)
+docker build -t picoride-builder-pico  docker/pico    # Raspberry Pi Pico (pico-sdk)
 ```
+
+The server picks the image from the project's target (Settings dialog):
+`esp32*` targets use `picoride-builder-esp32`, `pico` / `pico_w` / `pico2` /
+`pico2_w` use `picoride-builder-pico`. Image names can be overridden with
+`PICORIDE_ESP32_BUILDER_IMAGE` / `PICORIDE_PICO_BUILDER_IMAGE`.
+
+If PicoRuby bumps its required pico-sdk version, the Pico build stops with
+"pico-sdk X is not checked out!". Rebuild the image with
+`docker build --build-arg PICO_SDK_VERSION=X -t picoride-builder-pico docker/pico`.
+
+### Raspberry Pi Pico notes
+
+- A Pico build produces a `.uf2`. Use "UF2をダウンロード" in the menu bar, then
+  hold BOOTSEL while plugging in the Pico and copy the file to the drive that
+  appears (`RPI-RP2` / `RP2350`).
+- Unlike ESP32, `app/` is not baked into the firmware. Transfer it with
+  "app/ をアップロード" on the Terminal tab.
+- `pico` / `pico_w` (RP2040) support only FemtoRuby (mruby/c);
+  `pico2` / `pico2_w` support both FemtoRuby and PicoRuby (mruby).
 
 ## Run
 

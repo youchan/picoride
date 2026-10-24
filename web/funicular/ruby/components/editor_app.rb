@@ -177,7 +177,13 @@ class EditorApp < Funicular::Component
           platform: state[:settings_platform],
           vm: state[:settings_vm],
           usb_console: state[:settings_usb_console],
-          on_platform_change: ->(platform) { patch(settings_platform: platform) },
+          # ターゲットを切り替えて今のVMが選べなくなった(例: pico2でPicoRubyを
+          # 選んでからpicoへ変えた)ら、VMをデフォルトに戻す。
+          on_platform_change: ->(platform) {
+            vm = state[:settings_vm]
+            vm = '' unless ProjectSettingsDialog.vm_allowed?(platform, vm)
+            patch(settings_platform: platform, settings_vm: vm)
+          },
           on_vm_change: ->(vm) { patch(settings_vm: vm) },
           on_usb_console_change: ->(enabled) { patch(settings_usb_console: enabled) },
           on_save: -> { save_project_settings },

@@ -2,10 +2,11 @@
 # Sinatraをホストでネイティブに起動する(移行プラン フェーズ4)。
 #
 # Dockerはビルド/プラットフォームセットアップ実行専用(app.rbがdocker runで
-# ビルド専用イメージ = Dockerfile を都度起動する)になったので、このスクリプト
+# ターゲットに応じたビルド専用イメージ = docker/*/Dockerfile を都度起動する)になったので、このスクリプト
 # 自体はDockerを一切使わない。事前に一度だけビルド用イメージを作っておく必要がある:
 #
-#   docker build -t picoride-builder .
+#   docker build -t picoride-builder-esp32 docker/esp32   # ESP32用
+#   docker build -t picoride-builder-pico  docker/pico    # Raspberry Pi Pico用
 #
 # プロジェクトの置き場所は起動時には決まっておらず、起動後にブラウザの
 # 「ファイル」>「プロジェクトを開く」からディレクトリを指定して開く

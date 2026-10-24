@@ -346,6 +346,22 @@ button:disabled {
   opacity: 0.6;
 }
 
+/* Raspberry Pi Pico の「UF2をダウンロード」(<a download>)をボタンと同じ見た目にする */
+a.menu-download {
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+a.menu-download:hover {
+  background: var(--accent-hover);
+}
+
 .status {
   min-width: 90px;
   font-size: 12px;
@@ -575,6 +591,11 @@ button.build-refresh:hover:not(:disabled) {
   flex-direction: column;
   align-items: flex-start;
   gap: 12px;
+}
+
+.build-option-note {
+  max-width: 420px;
+  line-height: 1.5;
 }
 
 .dialog-actions {
