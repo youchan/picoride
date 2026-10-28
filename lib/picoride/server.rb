@@ -68,7 +68,7 @@ module Picoride
     self.project_root = loaded_projects[:active]
     self.project_settings = loaded_projects[:settings]
 
-    FUNICULAR_ROOT = File.join(WEB_ROOT, "funicular")
+    RUBY_ROOT = File.join(WEB_ROOT, "src")
 
     # プロジェクトごとに独立したR2P2-ESP32のビルド状態(sdkconfig・build/・
     # managed_components等)を置くディレクトリ名。「プロジェクトディレクトリの中に
@@ -311,8 +311,8 @@ module Picoride
 
     # Funicular アプリの Ruby ソース。
     get %r{/ruby/(.+\.rb)} do |rel|
-      full = File.expand_path(File.join(FUNICULAR_ROOT, "ruby", rel))
-      root_with_sep = File.join(FUNICULAR_ROOT, "ruby") + File::SEPARATOR
+      full = File.expand_path(File.join(RUBY_ROOT, rel))
+      root_with_sep = RUBY_ROOT + File::SEPARATOR
 
       json_error(400, "invalid path") unless full.start_with?(root_with_sep)
       halt 404 unless File.file?(full)

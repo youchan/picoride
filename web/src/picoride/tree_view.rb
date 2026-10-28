@@ -30,83 +30,85 @@
 # 状態」を持たせると壊れる(実際にターミナル機能でこれを踏んだ。詳細は
 # editor_app.rbやCLAUDE.md参照)。折りたたみ状態は必ず呼び出し側のstateに
 # 持たせ、props経由で渡すこと。
-class TreeView < Funicular::Component
-  def render
-    render_children(props[:nodes] || [], top_level: true)
-  end
-
-  private
-
-  def render_children(nodes, top_level: false)
-    ul(class: top_level ? 'tree-view' : 'tree-children') do
-      nodes.each { |node| render_node(node) }
+module PicoRIDE
+  class TreeView < Funicular::Component
+    def render
+      render_children(props[:nodes] || [], top_level: true)
     end
-  end
 
-  def render_node(node)
-    if node[:type] == :dir
-      render_dir_node(node)
-    else
-      render_file_node(node)
-    end
-  end
+    private
 
-  def render_dir_node(node)
-    path = node[:path]
-    collapsed = collapsed?(path)
-
-    li(key: path, class: 'tree-node tree-node-dir') do
-      div(class: 'tree-row', onclick: -> { toggle(path) }, oncontextmenu: ->(event) { context_menu(node, event) }) do
-        span(class: 'tree-caret') { collapsed ? '▸' : '▾' }
-        render_icon(node)
-        span(class: 'tree-label') { node[:name] }
-      end
-
-      render_children(node[:children] || []) unless collapsed
-    end
-  end
-
-  def render_file_node(node)
-    path = node[:path]
-    classes = path == props[:selected] ? 'tree-node tree-node-file active' : 'tree-node tree-node-file'
-
-    li(key: path, class: classes) do
-      div(class: 'tree-row', onclick: -> { select_file(path) }, oncontextmenu: ->(event) { context_menu(node, event) }) do
-        span(class: 'tree-caret-spacer')
-        render_icon(node)
-        span(class: 'tree-label') { node[:name] }
+    def render_children(nodes, top_level: false)
+      ul(class: top_level ? 'tree-view' : 'tree-children') do
+        nodes.each { |node| render_node(node) }
       end
     end
-  end
 
-  def render_icon(node)
-    icon_for = props[:icon_for]
-    return unless icon_for
+    def render_node(node)
+      if node[:type] == :dir
+        render_dir_node(node)
+      else
+        render_file_node(node)
+      end
+    end
 
-    icon = icon_for.call(node)
-    return unless icon
+    def render_dir_node(node)
+      path = node[:path]
+      collapsed = collapsed?(path)
 
-    span(class: "tree-icon #{icon[:class]}") { icon[:label].to_s }
-  end
+      li(key: path, class: 'tree-node tree-node-dir') do
+        div(class: 'tree-row', onclick: -> { toggle(path) }, oncontextmenu: ->(event) { context_menu(node, event) }) do
+          span(class: 'tree-caret') { collapsed ? '▸' : '▾' }
+          render_icon(node)
+          span(class: 'tree-label') { node[:name] }
+        end
 
-  def collapsed?(path)
-    (props[:collapsed] || []).include?(path)
-  end
+        render_children(node[:children] || []) unless collapsed
+      end
+    end
 
-  def toggle(path)
-    on_toggle = props[:on_toggle]
-    on_toggle.call(path) if on_toggle
-  end
+    def render_file_node(node)
+      path = node[:path]
+      classes = path == props[:selected] ? 'tree-node tree-node-file active' : 'tree-node tree-node-file'
 
-  def select_file(path)
-    on_select = props[:on_select]
-    on_select.call(path) if on_select
-  end
+      li(key: path, class: classes) do
+        div(class: 'tree-row', onclick: -> { select_file(path) }, oncontextmenu: ->(event) { context_menu(node, event) }) do
+          span(class: 'tree-caret-spacer')
+          render_icon(node)
+          span(class: 'tree-label') { node[:name] }
+        end
+      end
+    end
 
-  # ブラウザ標準の右クリックメニューは常に抑止し、呼び出し側にnode/eventを渡すだけ。
-  def context_menu(node, event)
-    event.preventDefault
-    on_context_menu = props[:on_context_menu]
-    on_context_menu.call(node, event) if on_context_menu
+    def render_icon(node)
+      icon_for = props[:icon_for]
+      return unless icon_for
+
+      icon = icon_for.call(node)
+      return unless icon
+
+      span(class: "tree-icon #{icon[:class]}") { icon[:label].to_s }
+    end
+
+    def collapsed?(path)
+      (props[:collapsed] || []).include?(path)
+    end
+
+    def toggle(path)
+      on_toggle = props[:on_toggle]
+      on_toggle.call(path) if on_toggle
+    end
+
+    def select_file(path)
+      on_select = props[:on_select]
+      on_select.call(path) if on_select
+    end
+
+    # ブラウザ標準の右クリックメニューは常に抑止し、呼び出し側にnode/eventを渡すだけ。
+    def context_menu(node, event)
+      event.preventDefault
+      on_context_menu = props[:on_context_menu]
+      on_context_menu.call(node, event) if on_context_menu
+    end
   end
 end
