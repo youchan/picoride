@@ -43,7 +43,7 @@ $ ruby app/app.rb
 ### コンポーネント分割
 
 状態(ファイル一覧・編集中パス・バッファ・保存済み内容・ターミナル接続状態)は
-`EditorApp` が一手に持ち、`TreeView` と `Toolbar` は props を受け取って描画するだけの
+`PicoRIDE::App` が一手に持ち、`TreeView` と `Toolbar` は props を受け取って描画するだけの
 表示専用にしている。子から親へは props で渡した lambda (`on_select` / `on_save`) を
 呼び返す。
 
@@ -51,7 +51,7 @@ $ ruby app/app.rb
 再描画されるたびに `initialize_state` からもう一度作り直される(ルートコンポーネント
 だけがマウント1回を保証される)。そのため「一度だけ初期化して使い回したい副作用」
 (外部ライブラリのインスタンス化、接続、イベントリスナー登録など)を持つロジックは
-子コンポーネントに切り出さず、`EditorApp` 側に書くこと。実際にターミナル機能
+子コンポーネントに切り出さず、`PicoRIDE::App` 側に書くこと。実際にターミナル機能
 (xterm.js + Web Serial)をこのルールに反して別コンポーネントに切り出した結果、
 「タブを行き来すると接続が切れる」不具合を起こした(詳細は `CLAUDE.md` 参照)。
 
@@ -107,5 +107,5 @@ VDOM描画にしている。スクロール追従は `onscroll:` ハンドラで
 - 自動インデント未実装(Tabはスペース2つを挿入するだけ)
 - 新規作成/削除/リネームAPIなし。既存ファイルの上書き保存のみ
 - 同時編集の競合制御なし(後勝ち)
-- 対応拡張子は `.rb` `.c` `.h`。増やす場合は `app/app.rb` の `ALLOWED_EXTENSIONS`、
-  `index.html` のPrismコンポーネント読み込み、`editor_app.rb` の `LANGUAGES` の3箇所
+- 対応拡張子は `.rb` `.c` `.h`。増やす場合は `lib/picorude/server.rb` の `ALLOWED_EXTENSIONS`、
+  `index.html` のPrismコンポーネント読み込み、`picoride/app.rb` の `LANGUAGES` の3箇所
