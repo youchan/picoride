@@ -4,30 +4,26 @@ require 'crc'
 # エディタ全体のルートコンポーネント。
 #
 # 状態(ファイル一覧・編集中のパス・バッファ・保存済み内容)はすべてここが持ち、
-# TreeView / Toolbar には props で流すだけの構成にしている。
+# 子コンポーネント(TreeView / Toolbar / Editor など)には props で流すだけの
+# 構成にしている。
 #
-# ■ textarea と Prism ハイライトの扱いについて
+# ■ コードエディタ(Editor)
 #
-# textarea は VDOM の制御下に置かず(value を render で出力せず)、
-# ファイルを切り替えたときだけ ref 経由で value を差し替える「非制御」にしている。
-# 入力のたびに VDOM が value を書き戻すとキャレットが末尾に飛ぶため。
+# textarea・ハイライト層・行番号は Editor(editor.rb)に切り出してある。
+# textarea を ref で直接触る処理(内容の流し込み・ハイライト・Tab インデント)は
+# 全部 Editor 側にあり、App は内容(state[:content])と editor_revision を
+# props で渡し、入力は on_change で受け取るだけ。Editor はインスタンス変数で
+# 同期状態を覚えるので preserve: true で呼び出す(editor.rb 冒頭のコメント参照)。
 #
-# ハイライト層 <code> も同様に、VDOM 上は「子を持たない空要素」として描画し、
-# Prism が生成したHTMLを innerHTML に直接流し込む。
-# 子を持たない要素は再描画時の差分がゼロなので、innerHTML が消されることはない。
-#
-# ■ ターミナル(xterm.js + Web Serial)を別コンポーネントに切り出さない理由
+# ■ ターミナル(xterm.js + Web Serial)を別コンポーネントに切り出していない理由
 #
 # 当初は TerminalPanel という別コンポーネントに分けていたが、「ファイルペインと
-# ターミナルペインを行き来すると接続が切れる」不具合が発生した。原因はFunicularの
-# 子コンポーネント(component(...)で呼び出す側)が、**親が再レンダリングされる
-# たびに initialize_state / component_mounted をもう一度呼び直す**という挙動
-# だったこと(実際にカウンタを仕込んでブラウザで確認した。EditorAppのような
-# Funicular.startに渡すルートコンポーネントだけがマウント1回を保証される)。
-# xterm.jsのインスタンスやシリアルポートの接続(@port)のような「1回だけ
-# 初期化して使い回したい副作用」を持つ以上、それらは全部ルートコンポーネントである
-# このEditorAppの中に置く必要がある。textarea/ハイライト層を子コンポーネントに
-# 切り出さず、非制御textarea+refで直接扱っているのと同じ理由・同じ対処。
+# ターミナルペインを行き来すると接続が切れる」不具合が発生した。原因は Funicular が
+# props の変わった子コンポーネントを作り直す(ラムダの props は毎回「変わった」扱い)
+# ことで、当時は仕組みが分からず、状態と副作用をこの App に統合して対処した。
+# 今なら preserve: true で子のまま保てるはずだが、現状の形で動いているので
+# 戻していない(CLAUDE.md の「【重大】子コンポーネントはpropsが変わると
+# 作り直される」の節参照)。
 module PicoRIDE
   class App < Funicular::Component
     # プロジェクト内の特別なディレクトリ名。app.rb側のAPP_DIRNAME/MRBGEMS_DIRNAMEと
@@ -35,9 +31,6 @@ module PicoRIDE
     # 両側に定義してある)。
     APP_DIRNAME = 'app'
     MRBGEMS_DIRNAME = 'mrbgems'
-
-    # 拡張子 → Prism の言語名
-    LANGUAGES = { 'rb' => 'ruby', 'c' => 'c', 'h' => 'c' }
 
     # PicoModemプロトコル定数(picoruby-picomodemのmrblib/picomodem.rbと対応)
     TERM_FILE_WRITE = 0x02
@@ -65,6 +58,9 @@ module PicoRIDE
         current_path: nil,
         content: '',
         saved_content: '',
+        # ファイルを開く/閉じるたびに増やす番号。Editor はこれが変わったときだけ
+        # textarea に content を流し込む(入力中の内容を書き戻さないため)。
+        editor_revision: 0,
         status: '',
         status_kind: '',
         build_status: 'idle',
@@ -109,17 +105,8 @@ module PicoRIDE
     end
 
     # state が変わるたびに呼ばれる(Funicular::Component#patch から引数なしで呼ばれる)。
-    # ハイライトは VDOM の外側(ref + innerHTML)で管理しているので、ここで同期する。
-    # 前回描画時との差分は自前で覚えておく必要がある。
     def component_updated
       scroll_log_to_bottom_if_changed
-
-      return if @prev_highlight_content == state[:content] &&
-                @prev_highlight_path == state[:current_path]
-
-      @prev_highlight_content = state[:content]
-      @prev_highlight_path = state[:current_path]
-      refresh_highlight
     end
 
     def render
@@ -223,13 +210,15 @@ module PicoRIDE
                 on_save: -> { save_file }
               )
 
-              # textarea・ハイライト層は子コンポーネントに切り出さず、ここ(App)で
-              # 直接描画する。refs(:editor/:highlight/:scroll/:lines)は描画した
-              # コンポーネント自身にしか付かないので、Editorという子コンポーネントに
-              # 分けるとAppのrefresh_highlight/sync_textareaからrefs[:editor]等が
-              # 見えなくなり、「ファイルを開いても中身が出ない」「入力した文字が
-              # 見えない」不具合になる(実際に起きた。ファイル冒頭のコメント参照)。
-              render_editor
+              # preserve: true が必須(editor.rb 冒頭のコメント参照)
+              component(Editor,
+                preserve: true,
+                path: state[:current_path],
+                content: state[:content],
+                revision: state[:editor_revision],
+                on_change: ->(value) { patch(content: value) },
+                on_save: -> { save_file }
+              )
             end
 
             div(class: tab_pane_class('terminal')) { render_terminal_panel }
@@ -272,86 +261,7 @@ module PicoRIDE
       upload_app_directory
     end
 
-    def handle_editor_input(event)
-      node = refs[:editor]
-      return unless node
-      patch(content: node[:value].to_s)
-    end
-
-    def handle_editor_keydown(event)
-      key = event[:key].to_s
-
-      # Ctrl+S / Cmd+S で保存
-      if key == 's' && (truthy?(event[:ctrlKey]) || truthy?(event[:metaKey]))
-        event.preventDefault
-        save_file
-        return
-      end
-
-      # Tab はフォーカス移動ではなくスペース2つの挿入にする
-      if key == 'Tab'
-        event.preventDefault
-        insert_indent
-      end
-    end
-
-    # 行番号カラムを本文のスクロールに追従させる
-    def handle_scroll(event)
-      scroll = refs[:scroll]
-      lines = refs[:lines]
-      return unless scroll && lines
-      lines[:scrollTop] = scroll[:scrollTop]
-    end
-
     private
-
-    # --- エディタ(textarea + Prismハイライト層) -----------------------------
-
-    def render_editor
-      div(class: 'editor-wrapper') do
-        # 行番号は innerHTML を使わず、そのまま VDOM で描画する
-        div(class: 'line-numbers', ref: :lines) do
-          (1..editor_line_count).each do |n|
-            div { n.to_s }
-          end
-        end
-
-        # スクロールする要素をこのコンテナ一箇所に集約し、
-        # ハイライト層と textarea は CSS Grid で同じセルに重ねる(style.css 参照)
-        div(class: 'editor-scroll-area', ref: :scroll, onscroll: :handle_scroll) do
-          tag(:pre, class: 'highlight-layer') do
-            tag(:code, ref: :highlight)
-          end
-          render_editor_textarea
-        end
-      end
-    end
-
-    def render_editor_textarea
-      if state[:current_path]
-        tag(:textarea,
-          id: 'editor',
-          ref: :editor,
-          spellcheck: 'false',
-          oninput: :handle_editor_input,
-          onkeydown: :handle_editor_keydown
-        )
-      else
-        tag(:textarea,
-          id: 'editor',
-          ref: :editor,
-          spellcheck: 'false',
-          disabled: true,
-          placeholder: '左のファイル一覧から編集するファイルを選んでください'
-        )
-      end
-    end
-
-    def editor_line_count
-      count = 1
-      state[:content].to_s.each_char { |ch| count += 1 if ch == "\n" }
-      count
-    end
 
     def render_editor_tabs
       div(class: 'editor-tabs') do
@@ -1102,12 +1012,12 @@ module PicoRIDE
             current_path: nil,
             content: '',
             saved_content: '',
+            editor_revision: state[:editor_revision] + 1,
             status: '',
             status_kind: '',
             settings_dialog_open: false,
             project_config: default_project_config
           )
-          sync_textarea('')
           load_file_list
           load_dir_list
           load_project_config
@@ -1301,8 +1211,7 @@ module PicoRIDE
     # 削除されたファイル(またはその親フォルダごと削除された場合)が現在エディタで
     # 開いたままになっていると、実体の無いファイルを編集し続けてしまうので閉じる。
     def close_open_file
-      patch(current_path: nil, content: '', saved_content: '')
-      sync_textarea('')
+      patch(current_path: nil, content: '', saved_content: '', editor_revision: state[:editor_revision] + 1)
     end
 
     def current_path_under?(dir_path)
@@ -1384,11 +1293,11 @@ module PicoRIDE
             current_path: path,
             content: content,
             saved_content: content,
+            # 非制御の textarea なので、Editor に「流し込み直して」と伝える
+            editor_revision: state[:editor_revision] + 1,
             status: '',
             status_kind: ''
           )
-          # 非制御の textarea なので、ファイル切り替え時はここで流し込む
-          sync_textarea(content)
         else
           patch(status: '読み込みに失敗しました', status_kind: 'error')
         end
@@ -1614,38 +1523,6 @@ module PicoRIDE
 
     def dirty?
       !state[:current_path].nil? && state[:content] != state[:saved_content]
-    end
-
-    def refresh_highlight
-      node = refs[:highlight]
-      return unless node
-      html = JS.global.funicularHighlight(state[:content], language).to_s
-      node[:innerHTML] = html
-    end
-
-    def sync_textarea(content)
-      node = refs[:editor]
-      return unless node
-      node[:value] = content
-    end
-
-    def insert_indent
-      node = refs[:editor]
-      return unless node
-
-      value = node[:value].to_s
-      from = node[:selectionStart].to_i
-      to = node[:selectionEnd].to_i
-
-      node[:value] = value[0, from].to_s + '  ' + value[to, value.length - to].to_s
-      node[:selectionStart] = from + 2
-      node[:selectionEnd] = from + 2
-
-      patch(content: node[:value].to_s)
-    end
-
-    def language
-      LANGUAGES[extension(state[:current_path])] || 'ruby'
     end
 
     def extension(path)

@@ -397,11 +397,24 @@ a.menu-download:hover {
   box-sizing: border-box;
 }
 
+/*
+  グリッドの行の高さ・列の幅はハイライト層(<pre>)の中身の大きさで決まり、
+  textarea はそれに合わせて引き伸ばされる(textarea の大きさは中身に依存しないため)。
+  以前はここを overflow: hidden + (上の共通ルールの)min-height: 100% にしていたが、
+  overflow が visible 以外のグリッドアイテムは最小サイズが 0 扱いになり、
+  行が表示領域の高さに押し込まれていた。その結果、長いファイルでも
+  .editor-scroll-area がスクロールできず、長い行では textarea だけが内部で
+  横スクロールしてハイライト層とずれ、入力した文字が見えなくなっていた。
+  overflow: visible + min-height: auto にすると、行・列が中身の大きさまで広がり、
+  スクロールは .editor-scroll-area 一箇所に集約される(<pre>は visible なので
+  独自にスクロールしない)。中身が短いときは行が表示領域いっぱいに引き伸ばされる。
+*/
 .highlight-layer {
   pointer-events: none;
   color: var(--text);
   background: none;
-  overflow: hidden; /* <pre>のデフォルトoverflow:autoを無効化し、独自スクロールを防ぐ */
+  overflow: visible;
+  min-height: auto;
 }
 
 .highlight-layer code {

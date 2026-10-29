@@ -799,18 +799,48 @@ PicoModemのフレームが混ざって壊れるため。
 付けても解決しない。
 
 エディタ(textarea + Prismハイライト層)を`Editor`という子コンポーネント
-(`editor.rb`)に切り出したことがあり、`App`の`sync_textarea`(ファイルを開いたときに
-textareaへ内容を入れる)・`refresh_highlight`(ハイライト層を描き直す)・
+(`editor.rb`)に見た目だけ切り出したことがあり、`App`の`sync_textarea`(ファイルを
+開いたときにtextareaへ内容を入れる)・`refresh_highlight`(ハイライト層を描き直す)・
 `insert_indent`が`refs[:editor]`/`refs[:highlight]`を引けずに何もしなくなった。
 textareaは文字色が透明で見えているのはハイライト層なので、「ファイルを開いても
 中身が空」「入力した文字が見えない」という症状になった。さらに`Editor#handle_input`の
 `patch(content: ...)`は`Editor`自身への更新で`App`の`state[:content]`が変わらず、
 `save_file`/`insert_indent`/`handle_scroll`は`App`にしか無いのでCtrl+S・Tab・
-スクロールでNoMethodErrorになる状態だった。描画と入力ハンドラを`App`
-(`render_editor` / `handle_editor_input` / `handle_editor_keydown`)に戻して解決した
-(`editor.rb`は`index.erb`から外してあり未使用)。**エディタは`App`から
-refで直接触るので、子コンポーネントに切り出さないこと。**
-同じ理由で、ログパネル(`LogPanel`)の`.build-log`を`App`から最下部へ
+スクロールでNoMethodErrorになる状態だった。
+
+#### 現在のEditor(正しい切り出し方)
+
+その後、refで触る処理ごと`Editor`に移す形で切り出し直した:
+
+- `App`は`component(Editor, preserve: true, path:, content:, revision:, on_change:, on_save:)`
+  で呼ぶだけ。textareaへの流し込み・ハイライト・Tabインデント・行番号の
+  スクロール追従は全部`Editor`が自分の`refs`で行う。入力は`on_change`で
+  `App`に伝え、`App`が`patch(content:)`する
+- `revision`(`App`の`state[:editor_revision]`)はファイルを開く/閉じる/
+  プロジェクトを切り替えるたびに`App`が増やす番号。`Editor`は
+  `component_mounted`/`component_updated`でこれを前回値(`@synced_revision`)と
+  比べ、変わったときだけtextareaに`content`を流し込む(入力中に書き戻すと
+  キャレットが末尾に飛ぶため)
+- **`preserve: true`は必須**。外すと`on_change`等のラムダのせいで`App`の
+  `patch`のたびに`Editor`が作り直され、`@synced_revision`が消えて毎回
+  textareaを書き戻す。実際に外して試すと、文の途中で入力した直後に
+  キャレットがファイル末尾に飛び、フォーカスも外れた
+- 検証: rubygems.orgに繋がらずSinatraを起動できない環境だったので、
+  同じ`web/`を配信して`/api/project`・`/api/files`・`/api/file`等だけを返す
+  Python製の代用サーバーと、CDNのライブラリ(Prism・xterm・picoruby-wasm)を
+  npmから取ったローカルコピーに差し替えるPlaywrightのテストで確認した
+  (ファイルを開く・末尾/途中への入力でキャレットが保たれる・Tab・Ctrl+S保存・
+  mrbgem.rakeの表示・ファイル切り替え。`preserve: true`無しでは失敗することも確認)
+
+**Tab / Ctrl+Sの`preventDefault`も間に合っていなかった**(切り出し前から):
+`Editor#handle_keydown`(Ruby)の`event.preventDefault`は右クリックメニューと
+同じ理由でブラウザのデフォルト動作に間に合わず(`defaultPrevented`が`false`の
+まま)、Tabでスペースが入ると同時にフォーカスが次のボタンへ移り、Ctrl+Sでは
+保存と同時にブラウザの「ページを保存」も動いていた。`index.erb`の素の
+`<script>`で`#editor`上のTab・Ctrl+S/Cmd+Sだけ同期的に`preventDefault`する
+ようにした(処理自体はRuby側のまま)。
+
+なお、ログパネル(`LogPanel`)の`.build-log`を`App`から最下部へ
 スクロールさせる処理も、refではなく`querySelector('.build-log')`で引いている。
 
 ## サイドバーのファイル一覧をツリー表示にした(TreeView)
