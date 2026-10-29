@@ -854,7 +854,7 @@ module Picoride
     # UI 側はこれをポーリングして進捗を表示する。
     get "/api/build" do
       content_type :json
-      BUILD_JOB.to_response_json
+      BUILD_JOB.to_response_json(offset: params["offset"], run_id: params["run_id"])
     end
 
     # idf.py build -DPICORB_VM=xxx に渡すフラグ(R2P2-ESP32/Rakefile の PICORB_VMS と同じ対応)。
@@ -1025,7 +1025,7 @@ module Picoride
     # プラットフォーム(ターゲットチップ)セットアップの実行状態とログを返す。
     get "/api/platform" do
       content_type :json
-      PLATFORM_JOB.to_response_json
+      PLATFORM_JOB.to_response_json(offset: params["offset"], run_id: params["run_id"])
     end
 
     # 現在のプロジェクトの設定に設定されているターゲットのセットアップを

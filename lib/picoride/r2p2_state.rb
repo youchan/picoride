@@ -40,19 +40,50 @@ module Picoride
     LITTLEFS_VERSION_FROM = 'joltwallet/littlefs: "~=1.20.0"'
     LITTLEFS_VERSION_TO = 'joltwallet/littlefs: "1.20.4"'
 
+    # cloneとサブモジュール取得・パッチがすべて終わったことを示す目印(ESP32/Pico共通)。
+    # 以前ESP32側は「.gitがあれば完了扱い」にしていたが、clone直後(サブモジュール
+    # 取得中)にリクエストが中断されたり、取得中に別のリクエスト(ビルド/セットアップの
+    # 再クリック)が来たりすると、サブモジュールが揃っておらずパッチも当たっていない
+    # 状態のまま「完了」とみなされ、`rake`が`LoadError: cannot load such file --
+    # mruby/core_ext`で失敗し続けた(mrubyはpicorubyのネストしたサブモジュール)。
+    READY_MARKER = ".picoride-ready"
+
+    # cloneは数分かかり、その間HTTPリクエスト(POST /api/build・/api/platform)を
+    # 同期的に待たせている。同じ状態ディレクトリに対して2つ目のリクエストが来た場合は
+    # 途中状態を使わせず、取得中である旨のエラーにする。
+    CHECKOUT_LOCK = Mutex.new
+
     module_function
 
-    # 状態ディレクトリが無ければgit cloneし、必要なパッチを当てる。
-    # 既にcloneされているディレクトリに対しては何もしない(パッチも初回のみ)。
+    # 状態ディレクトリが未完成ならgit clone/サブモジュール取得をし、必要なパッチを当てる。
+    # 途中で失敗・中断していた場合も、次回呼び出し時に続きから再試行する
+    # (cloneは.gitがあれば飛ばし、サブモジュール取得・パッチはどれも冪等)。
     def ensure_checkout(state_dir)
-      return if File.directory?(File.join(state_dir, ".git"))
+      return if File.file?(File.join(state_dir, READY_MARKER))
 
-      FileUtils.mkdir_p(File.dirname(state_dir))
-      run!("git", "clone", "--depth", "1", R2P2_ESP32_REPO_URL, state_dir)
-      run!("git", "-C", state_dir, "submodule", "update", "--init", "--recursive")
+      with_checkout_lock do
+        next if File.file?(File.join(state_dir, READY_MARKER))
 
-      patch_build_config_hooks(state_dir)
-      pin_littlefs_version(state_dir)
+        unless File.directory?(File.join(state_dir, ".git"))
+          FileUtils.mkdir_p(File.dirname(state_dir))
+          run!("git", "clone", "--depth", "1", R2P2_ESP32_REPO_URL, state_dir)
+        end
+        run!("git", "-C", state_dir, "submodule", "update", "--init", "--recursive")
+
+        patch_build_config_hooks(state_dir)
+        pin_littlefs_version(state_dir)
+        File.write(File.join(state_dir, READY_MARKER), "")
+      end
+    end
+
+    def with_checkout_lock
+      raise "別のリクエストでソースを取得中です。完了してからもう一度実行してください" unless CHECKOUT_LOCK.try_lock
+
+      begin
+        yield
+      ensure
+        CHECKOUT_LOCK.unlock
+      end
     end
 
     def patch_build_config_hooks(state_dir)
@@ -99,24 +130,24 @@ module Picoride
       mrbgems/picoruby-r2p2/lib/rp2040js
     ].freeze
 
-    # cloneとサブモジュール取得・フックのパッチがすべて終わったことを示す目印。
-    # ESP32側は「.gitがあれば完了扱い」だが、cloneは成功してサブモジュール取得で
-    # 失敗した場合に二度と再試行されなくなるので、Pico側は完了マーカーで判定する。
-    PICO_READY_MARKER = ".picoride-ready"
-
+    # 完了判定はESP32側と同じREADY_MARKERで行う。
     def ensure_pico_checkout(state_dir)
-      return if File.file?(File.join(state_dir, PICO_READY_MARKER))
+      return if File.file?(File.join(state_dir, READY_MARKER))
 
-      unless File.directory?(File.join(state_dir, ".git"))
-        FileUtils.mkdir_p(File.dirname(state_dir))
-        run!("git", "clone", "--depth", "1", PICORUBY_REPO_URL, state_dir)
+      with_checkout_lock do
+        next if File.file?(File.join(state_dir, READY_MARKER))
+
+        unless File.directory?(File.join(state_dir, ".git"))
+          FileUtils.mkdir_p(File.dirname(state_dir))
+          run!("git", "clone", "--depth", "1", PICORUBY_REPO_URL, state_dir)
+        end
+
+        submodules = pico_submodule_paths(state_dir) - PICO_SKIPPED_SUBMODULES
+        run!("git", "-C", state_dir, "submodule", "update", "--init", "--recursive", "--", *submodules)
+
+        patch_pico_build_config_hooks(state_dir)
+        File.write(File.join(state_dir, READY_MARKER), "")
       end
-
-      submodules = pico_submodule_paths(state_dir) - PICO_SKIPPED_SUBMODULES
-      run!("git", "-C", state_dir, "submodule", "update", "--init", "--recursive", "--", *submodules)
-
-      patch_pico_build_config_hooks(state_dir)
-      File.write(File.join(state_dir, PICO_READY_MARKER), "")
     end
 
     def pico_submodule_paths(state_dir)

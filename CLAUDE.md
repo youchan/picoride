@@ -114,11 +114,19 @@ Rubyプロジェクトの中で、Ruby(`.rb`)とC(`.c` `.h`)のソースコー�
 この2つはどちらも同じ形の非同期ジョブ(GETでポーリング、POSTで開始、実行中の
 POSTは409)なので、共通処理を `BackgroundJob` クラス(`app.rb`)に抽出してある。
 `BUILD_JOB` / `PLATFORM_JOB` という2つのインスタンスがそれぞれの状態
-(`idle`/`running`/`success`/`failed`、ログ)を持つ。ログは末尾
-`BackgroundJob::LOG_TAIL_LIMIT`(8,000文字)のみをレスポンスに含め、
-切り詰めた場合は `log_truncated: true` を付ける
-(ブラウザ内のPicoRuby.wasmで全量(100KB超になりうる)をJSONパース/描画すると
-数秒〜十秒近くかかり、「反応がない」ように見えてしまう問題への対処)。
+(`idle`/`running`/`success`/`failed`、ログ)を持つ。ブラウザ内のPicoRuby.wasmで
+全量(100KB超になりうる)を毎回JSONパースすると数秒〜十秒近くかかり「反応がない」
+ように見えるため、以前は末尾8,000文字だけを返して切り詰めていたが、
+「ログをトランケートしないでほしい」という要望で**差分取得方式**に変えた:
+`GET /api/build?offset=N&run_id=R`は取得済みの長さ`offset`以降だけを、1回あたり
+最大`BackgroundJob::LOG_CHUNK_LIMIT`(8,000文字)返す(`offset`/`next_offset`/
+`more`/`run_id`付き)。フロント(`App#refresh_build_status`等)は`next_offset`を
+次の`offset`にして追記し、`more`ならすぐ続きを取りに行く。`run_id`はジョブ開始の
+たびに増え、手元と違えば(新しいジョブ)サーバは先頭から返す。手動更新と
+ポーリングの二重リクエストで同じ差分を2回追記しないよう、`App#merge_job_log`は
+`offset`が手元の長さと一致しないレスポンスを捨てる。
+新しいログが来たらログ欄を最下部へスクロールする(`App#scroll_log_to_bottom_if_changed`、
+LogPanelは子コンポーネントで作り直されるので`querySelector('.build-log')`で引く)。
 `idf.py` / `rake` はESP-IDFの `export.sh` を読み込んだシェルでないと使えないため、
 両ジョブとも実行コマンドは `r2p2_shell_command` ヘルパーで
 `$IDF_PATH/export.sh` を明示的にsourceしてから組み立てている
@@ -476,7 +484,18 @@ gitリポジトリに混ざるべきではないため)。
 - `main/idf_component.yml`のjoltwallet/littlefsバージョン固定
 
 は、`R2P2State.ensure_checkout(state_dir)`として**プロジェクトが初めてその
-状態ディレクトリを使うとき**に動的に実行する処理になった。パッチ処理は
+状態ディレクトリを使うとき**に動的に実行する処理になった。
+
+**踏んだ罠**: 当初ESP32側は「`.git`があればチェックアウト済み」と判定していたため、
+clone直後のサブモジュール取得中にリクエストが中断されたり、取得中にビルド/
+セットアップをもう一度押したりすると、mruby(picorubyのネストしたサブモジュール)が
+未取得・フックのパッチも未適用のまま`docker run`が走り、
+`LoadError: cannot load such file -- mruby/core_ext`(`/R2P2-ESP32/Rakefile:9`)で
+失敗し続けた。現在はPico側と同じ完了マーカー(`R2P2State::READY_MARKER`、
+`.picoride-ready`)で判定し、未完成なら続きから(サブモジュール取得・パッチは冪等)
+やり直す。同時に2つ目のリクエストが来た場合は`CHECKOUT_LOCK`で弾き、途中状態を
+使わせない。マーカーの無い既存チェックアウトは、次回に一度だけ
+サブモジュール取得・パッチを再確認してからマーカーが付く。パッチ処理は
 シェルのワンライナー(`head -n -1` / `printf` / `mv`)から素のRubyコードに
 書き直した。理由は、プロジェクトごとに動的に実行する処理としてRubyで書く方が
 自然なのに加え、このセッションで2度踏んだシェルエスケープバグ

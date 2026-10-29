@@ -91,14 +91,11 @@ module PicoRIDE
       end
     end
 
+    # ログは切り詰めずに全量を表示する(差分取得で追記していくのはEditorApp側)。
+    # 新しいログが来たときの最下部へのスクロールもEditorApp側で行う
+    # (App#scroll_log_to_bottom_if_changed)。
     def log_text
-      if build_tab?
-        log = props[:build_log].to_s
-        props[:build_log_truncated] ? "…(冒頭は省略)\n#{log}" : log
-      else
-        log = props[:platform_log].to_s
-        props[:platform_log_truncated] ? "…(冒頭は省略)\n#{log}" : log
-      end
+      build_tab? ? props[:build_log].to_s : props[:platform_log].to_s
     end
   end
 end

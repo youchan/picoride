@@ -1,4 +1,4 @@
-# 最上部のメニュー/グローバルステータスバー。
+# 最上部のメニューバー。ビルドの状態表示はログパネルのビルドタブ(log_panel.rb)に一本化した。
 #
 # 常設ドロップダウンは「プロジェクト」の切り替え用。プロジェクトが1つも
 # 開かれていない(props[:known_projects]が空)間は、この場所に実質的に
@@ -17,44 +17,36 @@
 # (「新しいプロジェクト」はDirectoryBrowserDialogの「新しいフォルダ」+
 # 「このディレクトリを開く」に統合されている)。
 #
-# ターゲットチップ・VM・USB Consoleは以前ここに常設セレクト/ビルド時ダイアログで
-# 出していたが、「プロジェクトの設定としてプロジェクトに含めたい」という
-# フィードバックを受けてプロジェクトごとの設定(`~/.picoride/project.toml`)に
-# 持たせる方式に変更した。そのため、ここには設定値を編集する「設定」ボタンと、
-# その設定値をそのまま使って実行するだけの「セットアップ」「ビルド開始」
-# ボタンだけが残っている。
+# ターゲットチップ・VM・USB Consoleはプロジェクトごとの設定
+# (`~/.picoride/project.toml`)に持たせてある。
 # 左端には「ファイル」メニュー(プロジェクトを開く/mrbgemを追加/新規ファイル/
-# 新しいフォルダ)を置いてある。開閉状態はここでは持たず(理由は
+# 新しいフォルダ)と「ターゲット」メニュー(ターゲット設定/セットアップ)を置いてある。
+# 設定とセットアップは以前メニューバー右側の常設ボタンだったが、最初に一度
+# 触るだけのものなので「メニューに置きたい」という要望でメニューに移した
+# (常設ボタンとして残っているのは頻繁に使う「ビルド開始」「インストール」だけ)。
+# メニューの開閉状態はここでは持たず(理由は
 # editor_app.rbの「子コンポーネントは親の再描画のたびに作り直される」の節参照)、
-# props[:file_menu_open]として親(EditorApp)のstateをそのまま反映するだけにしてある。
+# props[:file_menu_open] / props[:target_menu_open]として親(EditorApp)の
+# stateをそのまま反映するだけにしてある。
 # 他のパネルと同じく表示専用で、実処理(状態管理・API呼び出し)は
 # props[:on_project_select] / props[:on_settings] / props[:on_setup] /
-# props[:on_build] / props[:on_file_menu_toggle] / props[:on_open_project] /
-# props[:on_add_mrbgem] / props[:on_new_file] / props[:on_new_folder]
-# 経由で親(EditorApp)に委譲する。
+# props[:on_build] / props[:on_file_menu_toggle] / props[:on_target_menu_toggle] /
+# props[:on_open_project] / props[:on_add_mrbgem] / props[:on_new_file] /
+# props[:on_new_folder] 経由で親(EditorApp)に委譲する。
 #
 # props[:project] は現在開いているプロジェクトの絶対パス(未設定ならnil)。
 # props[:known_projects] はこのセッションで一度でも開いたプロジェクトの
 # 絶対パスの配列(ドロップダウンの選択肢)。
 module PicoRIDE
   class MenuBar < Funicular::Component
-    STATUS_LABELS = {
-      'idle' => 'ビルド未実行',
-      'running' => 'ビルド中…',
-      'success' => 'ビルド成功',
-      'failed' => 'ビルド失敗'
-    }.freeze
-
     def render
       div(class: 'menu-bar') do
         span(class: 'menu-bar-title') { 'PicoRIDE' }
         render_file_menu
+        render_target_menu
         render_project_select
         div(class: 'menu-bar-spacer')
-        render_settings_button
-        render_setup_button
         render_build_button
-        render_status_pill
         render_install_button
       end
     end
@@ -63,6 +55,12 @@ module PicoRIDE
       event.preventDefault
       on_file_menu_toggle = props[:on_file_menu_toggle]
       on_file_menu_toggle.call if on_file_menu_toggle
+    end
+
+    def handle_target_menu_toggle(event)
+      event.preventDefault
+      on_target_menu_toggle = props[:on_target_menu_toggle]
+      on_target_menu_toggle.call if on_target_menu_toggle
     end
 
     def handle_open_project(event)
@@ -199,26 +197,41 @@ module PicoRIDE
       (name.nil? || name.empty?) ? path.to_s : name
     end
 
-    # 設定はプロジェクト単位(project_store.rb参照)なので、プロジェクト未設定の
-    # 間は保存先が無く押せない。
-    def render_settings_button
-      if props[:project].to_s.empty?
-        button(class: 'menu-settings', disabled: true) { '設定' }
-      else
-        button(class: 'menu-settings', onclick: :handle_settings) { '設定' }
+    # 「ターゲット」メニュー。見た目・開閉の仕組みは「ファイル」メニューと同じ。
+    def render_target_menu
+      div(class: 'file-menu') do
+        button(class: 'file-menu-toggle', onclick: :handle_target_menu_toggle) { 'ターゲット' }
+        render_target_menu_dropdown if props[:target_menu_open]
       end
     end
 
-    # ターゲットが未設定なら押せない(設定ダイアログで選んでもらう)。
-    def render_setup_button
+    def render_target_menu_dropdown
+      div(class: 'file-menu-dropdown') do
+        render_settings_menu_item
+        render_setup_menu_item
+      end
+    end
+
+    # 設定はプロジェクト単位(project_store.rb参照)なので、プロジェクト未設定の
+    # 間は保存先が無く押せない。
+    def render_settings_menu_item
+      if props[:project].to_s.empty?
+        button(class: 'file-menu-item', disabled: true) { 'ターゲット設定…' }
+      else
+        button(class: 'file-menu-item', onclick: :handle_settings) { 'ターゲット設定…' }
+      end
+    end
+
+    # ターゲットが未設定なら押せない(ターゲット設定で選んでもらう)。
+    def render_setup_menu_item
       platform = value_of(props[:project_config], 'platform')
 
       if props[:platform_building]
-        button(class: 'menu-setup', disabled: true) { 'セットアップ中…' }
+        button(class: 'file-menu-item', disabled: true) { 'セットアップ中…' }
       elsif platform.to_s.empty?
-        button(class: 'menu-setup', disabled: true) { 'ターゲット未設定' }
+        button(class: 'file-menu-item', disabled: true) { 'セットアップ(ターゲット未設定)' }
       else
-        button(class: 'menu-setup', onclick: :handle_setup) { "#{platform}をセットアップ" }
+        button(class: 'file-menu-item', onclick: :handle_setup) { "#{platform}をセットアップ" }
       end
     end
 
@@ -228,10 +241,6 @@ module PicoRIDE
       else
         button(class: 'menu-build', onclick: :handle_build) { 'ビルド開始' }
       end
-    end
-
-    def render_status_pill
-      span(class: "menu-bar-status #{props[:build_status]}") { status_label }
     end
 
     # ESP32: 実際の書き込み処理はブラウザのWeb Serial API経由でESP Web Tools
@@ -254,10 +263,6 @@ module PicoRIDE
           span(slot: 'not-allowed', class: 'menu-bar-hint') { 'HTTPS必須' }
         end
       end
-    end
-
-    def status_label
-      STATUS_LABELS[props[:build_status]] || props[:build_status].to_s
     end
 
     def value_of(data, key)

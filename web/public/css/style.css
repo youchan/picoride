@@ -64,41 +64,6 @@ html, body {
   flex: 1;
 }
 
-.menu-bar-status {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-  border-radius: 12px;
-  font-size: 12px;
-  white-space: nowrap;
-  background: #3c3c3c;
-  color: var(--text-dim);
-}
-
-.menu-bar-status::before {
-  content: '';
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.menu-bar-status.running {
-  background: rgba(0, 122, 204, 0.15);
-  color: var(--accent);
-}
-
-.menu-bar-status.success {
-  background: rgba(76, 175, 80, 0.15);
-  color: var(--ok);
-}
-
-.menu-bar-status.failed {
-  background: rgba(244, 67, 54, 0.15);
-  color: var(--error);
-}
-
 .menu-bar select {
   background: var(--bg);
   color: var(--text);
@@ -651,13 +616,19 @@ button.dialog-cancel:hover:not(:disabled) {
 
 /* esp-web-install-button 自体はShadow DOM内の"Connect"ボタンを描画するが、
    ここでは slot="activate" で差し込んだ通常の <button> を使っているので、
-   button { ... } の共通スタイルがそのまま当たる */
+   button { ... } の共通スタイルがそのまま当たる。
+   以前は縦並びのインストールパネルの中にあったので align-self: flex-start に
+   していたが、メニューバー(横並び・align-items: center)ではこれが上端寄せになり
+   ボタンだけ上にずれていた。他のボタンと同じく縦中央に揃える。 */
 esp-web-install-button {
-  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
 }
 
 /*
-  ファイルメニュー(menu_bar.rb)。トグルボタン+絶対配置のドロップダウンという
+  ファイル/ターゲットメニュー(menu_bar.rb、どちらも同じクラスを使う)。
+  トグルボタン+絶対配置のドロップダウンという
   一番シンプルな構成にしてある(他のダイアログと同じく、外側クリックでの
   自動クローズは実装していない。設定ダイアログ等も同じ割り切り)。
 */

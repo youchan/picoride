@@ -69,11 +69,13 @@ module PicoRIDE
         status_kind: '',
         build_status: 'idle',
         build_log: '',
-        build_log_truncated: false,
+        build_log_offset: 0, # サーバのログのうち取得済みの長さ(次回GETのoffset)
+        build_run_id: '',    # 取得済みログがどのジョブ実行のものか(BackgroundJobのrun_id)
         building: false,
         settings_dialog_open: false,
         project_config: default_project_config,
         file_menu_open: false,
+        target_menu_open: false,
         prompt_dialog: nil, # { kind:, title:, label:, placeholder:, confirm_label:, error:, context_dir: } または nil
         # { path:, parent:, entries:, loading:, error:, creating:, create_error:, open_error: } または nil(閉じている)。
         # 「プロジェクトを開く」のディレクトリブラウザ(DirectoryBrowserDialog)の状態。
@@ -84,7 +86,8 @@ module PicoRIDE
         settings_usb_console: false,
         platform_status: 'idle',
         platform_log: '',
-        platform_log_truncated: false,
+        platform_log_offset: 0,
+        platform_run_id: '',
         platform_building: false,
         log_tab: 'build',
         editor_tab: 'code',
@@ -109,6 +112,8 @@ module PicoRIDE
     # ハイライトは VDOM の外側(ref + innerHTML)で管理しているので、ここで同期する。
     # 前回描画時との差分は自前で覚えておく必要がある。
     def component_updated
+      scroll_log_to_bottom_if_changed
+
       return if @prev_highlight_content == state[:content] &&
                 @prev_highlight_path == state[:current_path]
 
@@ -125,15 +130,16 @@ module PicoRIDE
           project: state[:project],
           known_projects: state[:known_projects],
           project_config: state[:project_config],
-          build_status: state[:build_status],
           building: state[:building],
           platform_building: state[:platform_building],
           file_menu_open: state[:file_menu_open],
+          target_menu_open: state[:target_menu_open],
           on_project_select: ->(path) { open_project(path) },
           on_settings: -> { open_settings_dialog },
           on_setup: -> { start_platform_setup },
           on_build: -> { start_build },
           on_file_menu_toggle: -> { toggle_file_menu },
+          on_target_menu_toggle: -> { toggle_target_menu },
           on_open_project: -> { open_project_browser },
           on_add_mrbgem: -> { open_add_mrbgem_dialog },
           on_new_file: -> { open_new_file_dialog },
@@ -229,10 +235,8 @@ module PicoRIDE
               active_tab: state[:log_tab],
               build_status: state[:build_status],
               build_log: state[:build_log],
-              build_log_truncated: state[:build_log_truncated],
               platform_status: state[:platform_status],
               platform_log: state[:platform_log],
-              platform_log_truncated: state[:platform_log_truncated],
               selected_platform: value_of(state[:project_config], 'platform'),
               on_tab_change: ->(tab) { patch(log_tab: tab) },
               on_build_refresh: -> { refresh_build_status },
@@ -803,8 +807,13 @@ module PicoRIDE
 
     # --- ファイルメニュー(プロジェクトを開く/mrbgemを追加/新規ファイル/新しいフォルダ) --
 
+    # ファイル/ターゲットの2つのメニューは同時に開かない(片方を開いたらもう片方を閉じる)。
     def toggle_file_menu
-      patch(file_menu_open: !state[:file_menu_open])
+      patch(file_menu_open: !state[:file_menu_open], target_menu_open: false)
+    end
+
+    def toggle_target_menu
+      patch(target_menu_open: !state[:target_menu_open], file_menu_open: false)
     end
 
     # 「プロジェクトを開く」ダイアログを開く。常にホームディレクトリから始める
@@ -1307,7 +1316,8 @@ module PicoRIDE
     def start_build
       return if state[:building]
 
-      patch(building: true, build_status: 'running', build_log: '')
+      # ビルドの状態表示はログパネルのビルドタブにしか無いので、そちらに切り替える。
+      patch(log_tab: 'build', building: true, build_status: 'running', build_log: '', build_log_offset: 0)
 
       Funicular::HTTP.post('/api/build', {}) do |response|
         if response.ok
@@ -1333,27 +1343,69 @@ module PicoRIDE
       JS.global.setTimeout(3000) { refresh_build_status }
     end
 
+    # ログは切り詰めずに全量を表示するが、毎回全量を取り直すとPicoRuby.wasmでの
+    # JSONパースが重くなる(数秒〜十秒固まる)ので、取得済みの長さ(offset)以降の
+    # 差分だけを取って追記する(BackgroundJob#to_response_json参照)。
+    # 1レスポンスは最大8,000文字で、続きがあれば(more)すぐ次を取りに行く。
     def refresh_build_status
-      Funicular::HTTP.get('/api/build') do |response|
+      query = "?offset=#{state[:build_log_offset]}&run_id=#{state[:build_run_id]}"
+      Funicular::HTTP.get("/api/build#{query}") do |response|
         next unless response.ok
 
         data = response.data || {}
         status = value_of(data, 'status').to_s
-        log = value_of(data, 'log').to_s
-        log_truncated = truthy?(value_of(data, 'log_truncated'))
         still_running = status == 'running'
+        log = merge_job_log(data, state[:build_log], state[:build_log_offset])
 
-        patch(
-          build_status: status,
-          build_log: log,
-          build_log_truncated: log_truncated,
-          building: still_running
-        )
+        if log
+          patch(
+            build_status: status,
+            build_log: log,
+            build_log_offset: value_of(data, 'next_offset').to_s.to_i,
+            build_run_id: value_of(data, 'run_id').to_s,
+            building: still_running
+          )
+        else
+          patch(build_status: status, building: still_running)
+        end
 
         # running の間だけポーリングを継続する。手動の「ログを更新」クリックと
         # ポーリングのタイマーが両方生きていると呼び出しが二重になりうるが、
-        # 単なる冗長リクエストで実害はないため許容している
-        schedule_build_poll if still_running
+        # 重複したレスポンスはmerge_job_logが捨てるので実害はない
+        if truthy?(value_of(data, 'more'))
+          JS.global.setTimeout(0) { refresh_build_status }
+        elsif still_running
+          schedule_build_poll
+        end
+      end
+    end
+
+    # GET /api/build・/api/platform のレスポンス(差分)を手元のログに反映した
+    # 結果を返す。offsetが0なら(新しいジョブが始まった/初回取得)丸ごと置き換え、
+    # 手元の長さと一致すれば追記。どちらでもなければ二重リクエストなどで
+    # 既に反映済みの古いレスポンスなので nil(反映しない)を返す。
+    def merge_job_log(data, current_log, current_offset)
+      chunk = value_of(data, 'log').to_s
+      offset = value_of(data, 'offset').to_s.to_i
+      return chunk if offset == 0
+      return nil unless offset == current_offset
+
+      current_log + chunk
+    end
+
+    # 表示中のログ(タブ)の中身が変わったら、ログ表示欄を一番下までスクロールする。
+    # .build-log はLogPanel(子コンポーネント)の中にあり、子は親の再描画のたびに
+    # 作り直される(CLAUDE.md参照)ので、refではなくDOMを直接引く。
+    # DOMへの反映後に実行されるよう setTimeout(0) で遅らせている。
+    def scroll_log_to_bottom_if_changed
+      log = state[:log_tab] == 'platform' ? state[:platform_log] : state[:build_log]
+      key = "#{state[:log_tab]}:#{log.to_s.bytesize}"
+      return if @prev_log_scroll_key == key
+
+      @prev_log_scroll_key = key
+      JS.global.setTimeout(0) do
+        node = JS.global[:document].querySelector('.build-log')
+        node[:scrollTop] = node[:scrollHeight].to_i if node
       end
     end
 
@@ -1361,7 +1413,12 @@ module PicoRIDE
       return if state[:platform_building]
       return if value_of(state[:project_config], 'platform').to_s.empty?
 
-      patch(platform_building: true, platform_status: 'running', platform_log: '')
+      # ターゲットメニューから実行するので、メニューを閉じてログパネルを
+      # セットアップのタブに切り替え、進捗がすぐ見えるようにする。
+      patch(
+        target_menu_open: false, log_tab: 'platform',
+        platform_building: true, platform_status: 'running', platform_log: '', platform_log_offset: 0
+      )
 
       Funicular::HTTP.post('/api/platform', {}) do |response|
         if response.ok
@@ -1383,23 +1440,32 @@ module PicoRIDE
     end
 
     def refresh_platform_status
-      Funicular::HTTP.get('/api/platform') do |response|
+      query = "?offset=#{state[:platform_log_offset]}&run_id=#{state[:platform_run_id]}"
+      Funicular::HTTP.get("/api/platform#{query}") do |response|
         next unless response.ok
 
         data = response.data || {}
         status = value_of(data, 'status').to_s
-        log = value_of(data, 'log').to_s
-        log_truncated = truthy?(value_of(data, 'log_truncated'))
         still_running = status == 'running'
+        log = merge_job_log(data, state[:platform_log], state[:platform_log_offset])
 
-        patch(
-          platform_status: status,
-          platform_log: log,
-          platform_log_truncated: log_truncated,
-          platform_building: still_running
-        )
+        if log
+          patch(
+            platform_status: status,
+            platform_log: log,
+            platform_log_offset: value_of(data, 'next_offset').to_s.to_i,
+            platform_run_id: value_of(data, 'run_id').to_s,
+            platform_building: still_running
+          )
+        else
+          patch(platform_status: status, platform_building: still_running)
+        end
 
-        schedule_platform_poll if still_running
+        if truthy?(value_of(data, 'more'))
+          JS.global.setTimeout(0) { refresh_platform_status }
+        elsif still_running
+          schedule_platform_poll
+        end
       end
     end
 
@@ -1412,6 +1478,7 @@ module PicoRIDE
     def open_settings_dialog
       config = state[:project_config] || {}
       patch(
+        target_menu_open: false,
         settings_dialog_open: true,
         settings_platform: value_of(config, 'platform'),
         settings_vm: value_of(config, 'vm').to_s,
