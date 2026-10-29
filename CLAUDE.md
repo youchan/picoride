@@ -126,7 +126,7 @@ POSTは409)なので、共通処理を `BackgroundJob` クラス(`app.rb`)に抽
 ポーリングの二重リクエストで同じ差分を2回追記しないよう、`App#merge_job_log`は
 `offset`が手元の長さと一致しないレスポンスを捨てる。
 新しいログが来たらログ欄を最下部へスクロールする(`App#scroll_log_to_bottom_if_changed`、
-LogPanelは子コンポーネントで作り直されるので`querySelector('.build-log')`で引く)。
+LogPanelは子コンポーネントで、その中の要素は`App`の`refs`からは見えないので`querySelector('.build-log')`で引く)。
 `idf.py` / `rake` はESP-IDFの `export.sh` を読み込んだシェルでないと使えないため、
 両ジョブとも実行コマンドは `r2p2_shell_command` ヘルパーで
 `$IDF_PATH/export.sh` を明示的にsourceしてから組み立てている
@@ -571,7 +571,7 @@ Ruby/rbenv/R2P2-ESP32を全部イメージから追い出して「ESP-IDFツー�
 
 **ターミナル関連の状態・ロジックは全部`editor_app.rb`(ルートコンポーネント)の
 中にある。** 当初は`TerminalPanel`という別コンポーネントに分けていたが、後述の
-「子コンポーネントは親の再描画のたびに作り直される」問題を踏んで`EditorApp`に
+「子コンポーネントはpropsが変わると作り直される」問題を踏んで`EditorApp`に
 統合した。次にこの機能を触るときも、うっかり別コンポーネントに切り出さないこと。
 
 ### 設計方針: サーバは一切関与しない
@@ -712,54 +712,106 @@ PicoModemのフレームが混ざって壊れるため。
 タブに切り替えた瞬間に`.xterm-rows`が生成され、寸法も正しく反映される」ことを
 確認済み。
 
-### 【重大】子コンポーネントは親が再描画されるたびに作り直される
+### 【重大】子コンポーネントはpropsが変わると作り直される(ラムダを渡すと毎回)
 #
 # このセクションはこのIDE特有の、かつ他の機能にも影響しうる重要な制約なので
 # 太字にしてある。今後 `component(SomeClass, ...)` で切り出した子コンポーネントに
 # 「一度だけ初期化して使い回したい副作用」(外部リソースへの接続、イベント
-# リスナー登録、外部ライブラリのインスタンス化など)を持たせるときは、必ず
+# リスナー登録、外部ライブラリのインスタンス化など)や状態を持たせるときは、必ず
 # このセクションを読み返すこと。
+
+**以前の記述の訂正**: この節は以前「子コンポーネントは親が再描画されるたびに
+(無条件に)作り直される」と書いていたが、Funicularのソース
+(github.com/picoruby/funicular の `mrblib/differ.rb` の `diff_component`)を読んで
+確認した結果、正確には「**propsが前回と`==`で等しくなければ作り直される**」で
+あり、このアプリでは**子にラムダを渡しているせいで毎回「等しくない」になっていた**、
+というのが実態だった。またインスタンスを保つための`preserve: true`オプションが
+用意されていた。このアプリが読み込んでいる`@picoruby/wasm-wasi@4.0.2`の
+`picoruby.wasm`にも同じ処理(`props_changed_excluding_procs?`等)が入っていることを
+確認済み。
+
+#### Funicularの子コンポーネントの扱い(`VDOM::Differ.diff_component`)
+
+親が再描画されて、同じ位置に同じクラスの子コンポーネントがあるとき:
+
+1. **`preserve: true`が付いている場合**(`component(Foo, preserve: true, ...)`)
+   - 前回のインスタンスをそのまま使い続ける(`initialize_state`・`component_mounted`は
+     呼び直されない。state・インスタンス変数も保たれる)
+   - 変わったのがProc/Lambdaのpropsだけなら、`instance.props`を差し替えるだけで
+     再描画しない
+   - データのpropsが変わっていれば、同じインスタンスで`build_vdom`し直し、差分だけを
+     DOMに反映して、イベントを付け直し、`component_updated`を呼ぶ
+2. **付いていない場合**
+   - propsとchildrenが前回と`==`で等しければ、インスタンスをそのまま残す(何もしない)
+   - 1つでも違えば`Patch.replace`で丸ごと置き換える。古いインスタンスは`unmount`
+     (`component_will_unmount`)され、新しいインスタンスが作られて
+     `initialize_state`・`component_mounted`がもう一度呼ばれる
+
+**このアプリで毎回作り直されていた理由**: `on_save: -> { save_file }`のような
+`-> { }`は描画するたびに新しいProcオブジェクトになり、Procの`==`は同一オブジェクト
+かどうかで比べるので、**ラムダを1つでもpropsに渡している子は毎回「propsが
+変わった」と判定されて2の「丸ごと置き換え」になる**。このアプリの子
+(`Toolbar` `MenuBar` `LogPanel` `TreeView` `ProjectSettingsDialog`等)はほぼ全部
+コールバック用のラムダを受け取っているので、結果として親(`App`)の`patch()`の
+たびに作り直されている。`App`は1文字タイプ・タブ切り替え・3秒おきのログ
+ポーリング等、ほぼ全ての操作で`patch()`する。なお`key:`は兄弟要素の並べ替え
+(keyed diff)用で、インスタンスを保つ用途ではない。
+
+`preserve: true`はFunicular内部ではルーターの入れ子レイアウト(`outlet`)で
+使われているだけで、README・docsには記載が無い(ソースを読まないと気付けない)。
+
+#### 実際に踏んだ不具合: TerminalPanel
 
 最初`TerminalPanel`という独立コンポーネント(`props`に`project`/`files`/`active`を
 渡し、`state`に接続状態を持たせる作り)にしていたところ、
 「ファイルペインとターミナルペインを行き来すると接続が切れる。再接続しようとすると
 `すでにオープンされている`と言われて失敗する」という不具合が実際のユーザーから
-報告された。
+報告された。`initialize_state`/`component_mounted`に呼び出し回数を数える一時的な
+デバッグコードを仕込んでブラウザで確認したところ、`TerminalPanel`側は数回の
+操作で3回以上呼ばれ、ルートの`App`側は終始1回だけだった(上記の仕組みどおり)。
 
-原因はFunicularの仕様: **`component(SomeClass, props)`という呼び出しは、呼び出す
-親(ここではEditorApp)が再描画されるたびに、その子コンポーネントの
-`initialize_state`と`component_mounted`を毎回呼び直す。** ルートコンポーネント
-(`Funicular.start(EditorApp, ...)`に渡すもの)だけがマウント1回を保証される。
-これは`EditorApp`の`initialize_state`/`component_mounted`に呼び出し回数を数える
-一時的なデバッグコードを仕込んで実際にブラウザで確認した(`TerminalPanel`側は
-数回のページ操作だけで3回以上呼ばれたのに対し、`EditorApp`側は終始1回だけだった)。
+具体的には、`App`が`patch()`するたびに`TerminalPanel`が作り直されて`state[:status]`が
+初期値`'disconnected'`に戻り、UI上は「未接続」に見える。ユーザーが「接続」を押すと
+`JS::WebSerial.connect`がまた`_request_port`を呼び、同じ物理デバイスを選ぶと
+(一度も`.close()`されていないため)ブラウザ側ではまだopenなSerialPortが返り、
+`.open()`が`InvalidStateError`(「すでにオープンされている」)で失敗した。
 
-この既存コードベースを見ると、**このIDEの子コンポーネント(`FileList` `Toolbar`
-`MenuBar` `ProjectSettingsDialog` `LogPanel`)は元から1つも`initialize_state`を
-定義していない**、つまり全部「propsを受け取って描画するだけの表示専用」
-コンポーネントだった。これは単なるコーディング規約ではなく、**Funicularのこの
-挙動に対する回避策として最初から必須の設計**だったということ。`TerminalPanel`は
-この規約を破って唯一`initialize_state`を持つ子コンポーネントにしてしまったために
-問題が表面化した。
+当時は仕組みが分からなかったので、**状態と副作用(xterm.jsインスタンス、
+シリアルポート、イベントリスナー)を`App`本体へ丸ごと統合する**ことで対処した
+(`terminal_panel.rb`は削除、`terminal_`プレフィックス付きのメソッド/state keyとして
+移動)。今なら`component(TerminalPanel, preserve: true, ...)`で子のまま保てた
+可能性があるが、現状の統合した形で動いているので戻してはいない。
 
-具体的に起きていたこと: EditorAppは`patch()`のたびに再描画される(タブ切り替え・
-ファイルを開く・1文字タイプする、等ほぼ全ての操作で発生)。そのたびに
-`TerminalPanel`の`initialize_state`が再実行され、`state[:status]`が初期値
-`'disconnected'`に戻る。一方`@port`(生のシリアルポート、実際にはbrowserレベルで
-まだopenのまま)はインスタンス変数なので必ずしも即座には失われないが、UI表示上は
-「未接続」に見える。ユーザーが「接続」ボタンを押すと`JS::WebSerial.connect`が
-また`_request_port`を呼び、同じ物理デバイスを選ぶと(一度も`.close()`されていない
-ため)ブラウザ側ではまだopenなSerialPortオブジェクトが返り、`.open()`が
-`InvalidStateError`(「すでにオープンされている」)で失敗する。
+#### 子コンポーネントを書くときの指針
 
-対処: **状態と副作用(xterm.jsインスタンス、シリアルポート、イベントリスナー)を
-`TerminalPanel`から`EditorApp`本体へ丸ごと統合した**(`terminal_panel.rb`は削除、
-ロジックは`editor_app.rb`に`terminal_`プレフィックス付きのメソッド/state key
-として移動)。これは元々あった「textarea/ハイライト層をコンポーネントに切り出さず
-EditorApp直下に置く」設計と全く同じ理由・同じ対処であり、後から振り返れば
-必然だった。もし将来また「一度だけ初期化する副作用を持つUI」を追加したくなったら、
-別コンポーネントに切り出さずEditorAppに直接書くか、少なくともこの制約を
-踏まえた設計にすること。
+- **propsを受け取って描画するだけの子**(`initialize_state`を持たない)は、
+  作り直されても出力が同じなので問題ない。今ある子は全部この形
+- **状態・インスタンス変数・一度きりの副作用を持たせたい子**は
+  `preserve: true`を付ける(または`App`に直接書く)
+- 余計な作り直しを減らしたいだけなら、ラムダを`@on_save ||= -> { save_file }`の
+  ようにインスタンス変数で使い回せば、データのpropsが同じ限り作り直されない
+
+#### 別の落とし穴: refsは描画したコンポーネントにしか付かない(エディタで踏んだ)
+
+`ref: :foo`を付けた要素は、**その要素を描画したコンポーネントの`refs`にしか
+登録されない**(`collect_refs`はコンポーネント単位)。親から`refs[:foo]`で子の中の
+要素には触れない。これは上の「作り直し」とは別の問題で、`preserve: true`を
+付けても解決しない。
+
+エディタ(textarea + Prismハイライト層)を`Editor`という子コンポーネント
+(`editor.rb`)に切り出したことがあり、`App`の`sync_textarea`(ファイルを開いたときに
+textareaへ内容を入れる)・`refresh_highlight`(ハイライト層を描き直す)・
+`insert_indent`が`refs[:editor]`/`refs[:highlight]`を引けずに何もしなくなった。
+textareaは文字色が透明で見えているのはハイライト層なので、「ファイルを開いても
+中身が空」「入力した文字が見えない」という症状になった。さらに`Editor#handle_input`の
+`patch(content: ...)`は`Editor`自身への更新で`App`の`state[:content]`が変わらず、
+`save_file`/`insert_indent`/`handle_scroll`は`App`にしか無いのでCtrl+S・Tab・
+スクロールでNoMethodErrorになる状態だった。描画と入力ハンドラを`App`
+(`render_editor` / `handle_editor_input` / `handle_editor_keydown`)に戻して解決した
+(`editor.rb`は`index.erb`から外してあり未使用)。**エディタは`App`から
+refで直接触るので、子コンポーネントに切り出さないこと。**
+同じ理由で、ログパネル(`LogPanel`)の`.build-log`を`App`から最下部へ
+スクロールさせる処理も、refではなく`querySelector('.build-log')`で引いている。
 
 ## サイドバーのファイル一覧をツリー表示にした(TreeView)
 
@@ -775,7 +827,7 @@ tree_view.rb`)に置き換えた。
 描画するだけの汎用コンポーネントにしてある。props(`nodes` `collapsed` `selected`
 `icon_for` `on_select` `on_toggle`)経由でしか外の世界とやり取りしない。
 
-前節の「子コンポーネントは親の再描画のたびに作り直される」という制約があるので、
+前節の「子コンポーネントはpropsが変わると作り直される(ラムダを渡すと毎回)」という制約があるので、
 **折りたたみ状態(どのディレクトリが閉じているか)は`TreeView`自身のstateには
 一切持たせず、呼び出し側(`EditorApp`の`state[:collapsed_dirs]`)に持たせて
 propsで渡す**設計にしてある。`TreeView`は`initialize_state`を定義していない
@@ -1213,8 +1265,8 @@ build_config.rb)自体は変更していない。「新しいプロジェクト�
   (`TreeView`・`OpenProjectDialog`等)と同じく`initialize_state`を持たない
   表示専用コンポーネントにしてある。現在地・一覧・読み込み中/エラー状態は
   全部`EditorApp`の`state[:workspace_browser]`(Hashまたはnil)に持たせ、
-  propsとして渡すだけ(理由はCLAUDE.md内の「子コンポーネントは親が
-  再描画されるたびに作り直される」の節と同じ)。新規フォルダ名の入力欄だけは
+  propsとして渡すだけ(理由はCLAUDE.md内の「子コンポーネントはpropsが
+  変わると作り直される」の節と同じ)。新規フォルダ名の入力欄だけは
   `PromptDialog`と同じ理由でrefベースの非制御コンポーネントにしてある
 - パンくず("/" "home" "youchan" "Projects"のようなクリック可能なセグメント)は
   `path.split('/')`から累積パスを組み立てて作る。他の箇所

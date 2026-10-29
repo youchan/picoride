@@ -223,10 +223,13 @@ module PicoRIDE
                 on_save: -> { save_file }
               )
 
-              component(Editor,
-                current_path: state[:current_path],
-                content: state[:content]
-              )
+              # textarea・ハイライト層は子コンポーネントに切り出さず、ここ(App)で
+              # 直接描画する。refs(:editor/:highlight/:scroll/:lines)は描画した
+              # コンポーネント自身にしか付かないので、Editorという子コンポーネントに
+              # 分けるとAppのrefresh_highlight/sync_textareaからrefs[:editor]等が
+              # 見えなくなり、「ファイルを開いても中身が出ない」「入力した文字が
+              # 見えない」不具合になる(実際に起きた。ファイル冒頭のコメント参照)。
+              render_editor
             end
 
             div(class: tab_pane_class('terminal')) { render_terminal_panel }
@@ -269,6 +272,29 @@ module PicoRIDE
       upload_app_directory
     end
 
+    def handle_editor_input(event)
+      node = refs[:editor]
+      return unless node
+      patch(content: node[:value].to_s)
+    end
+
+    def handle_editor_keydown(event)
+      key = event[:key].to_s
+
+      # Ctrl+S / Cmd+S で保存
+      if key == 's' && (truthy?(event[:ctrlKey]) || truthy?(event[:metaKey]))
+        event.preventDefault
+        save_file
+        return
+      end
+
+      # Tab はフォーカス移動ではなくスペース2つの挿入にする
+      if key == 'Tab'
+        event.preventDefault
+        insert_indent
+      end
+    end
+
     # 行番号カラムを本文のスクロールに追従させる
     def handle_scroll(event)
       scroll = refs[:scroll]
@@ -278,6 +304,54 @@ module PicoRIDE
     end
 
     private
+
+    # --- エディタ(textarea + Prismハイライト層) -----------------------------
+
+    def render_editor
+      div(class: 'editor-wrapper') do
+        # 行番号は innerHTML を使わず、そのまま VDOM で描画する
+        div(class: 'line-numbers', ref: :lines) do
+          (1..editor_line_count).each do |n|
+            div { n.to_s }
+          end
+        end
+
+        # スクロールする要素をこのコンテナ一箇所に集約し、
+        # ハイライト層と textarea は CSS Grid で同じセルに重ねる(style.css 参照)
+        div(class: 'editor-scroll-area', ref: :scroll, onscroll: :handle_scroll) do
+          tag(:pre, class: 'highlight-layer') do
+            tag(:code, ref: :highlight)
+          end
+          render_editor_textarea
+        end
+      end
+    end
+
+    def render_editor_textarea
+      if state[:current_path]
+        tag(:textarea,
+          id: 'editor',
+          ref: :editor,
+          spellcheck: 'false',
+          oninput: :handle_editor_input,
+          onkeydown: :handle_editor_keydown
+        )
+      else
+        tag(:textarea,
+          id: 'editor',
+          ref: :editor,
+          spellcheck: 'false',
+          disabled: true,
+          placeholder: '左のファイル一覧から編集するファイルを選んでください'
+        )
+      end
+    end
+
+    def editor_line_count
+      count = 1
+      state[:content].to_s.each_char { |ch| count += 1 if ch == "\n" }
+      count
+    end
 
     def render_editor_tabs
       div(class: 'editor-tabs') do
@@ -927,7 +1001,7 @@ module PicoRIDE
       patch(file_menu_open: false, context_menu: nil, prompt_dialog: {
         kind: :new_file,
         title: '新規ファイル',
-        label: context_dir_label(context_dir, '拡張子は.rb'),
+        label: context_dir_label(context_dir, new_file_extension_note(context_dir)),
         placeholder: context_dir == 'app' ? 'utils/foo.rb' : 'foo.rb',
         confirm_label: '作成',
         error: nil,
@@ -950,6 +1024,13 @@ module PicoRIDE
     def context_dir_label(context_dir, note)
       base = context_dir == 'app' ? 'app/ からの相対パス' : "#{context_dir}/ 内の名前"
       note ? "#{base}。#{note}" : base
+    end
+
+    # 新規ファイルに使える拡張子の説明(サーバ側のcreatable_extension?と対応)。
+    # app/配下は起動スクリプト置き場なので.rbのみ、それ以外は編集できる拡張子すべて。
+    def new_file_extension_note(context_dir)
+      in_app = context_dir == APP_DIRNAME || context_dir.start_with?("#{APP_DIRNAME}/")
+      in_app ? '拡張子は.rb' : '拡張子は .rb / .c / .h / .rake'
     end
 
     # PromptDialogの確定ボタン(または入力欄でのEnter)から呼ばれる。
@@ -1081,13 +1162,17 @@ module PicoRIDE
     # TreeView自体はファイル/プロジェクトの概念を知らない汎用コンポーネントなので、
     # 右クリックされたnode(type/path)を受け取ってメニューの中身を決めるのはこちら側の
     # 責務にしてある。出す項目はnodeの種類によって変える:
-    #   - ファイル: 削除
+    #   - ファイル: (そのファイルと同じフォルダに)ファイルを作成/フォルダを作成、削除
     #   - "app" 自身: ファイルを作成/フォルダを作成(削除は出さない。プロジェクトの
     #     実行スクリプト置き場である app/ 自体を消せてしまうと壊れるため)
-    #   - "app" 配下のディレクトリ: ファイルを作成/フォルダを作成/削除
-    #   - "mrbgems" 自身: mrbgemを追加(専用の雛形を作る、他のディレクトリとは別メニュー)
-    #   - それ以外のディレクトリ(mrbgems/<gem>やそのサブディレクトリ等): 削除のみ
-    #     (ファイル/フォルダの新規作成はapp/配下限定のため、ここでは作成系を出さない)
+    #   - "mrbgems" 自身: mrbgemを追加のみ(直下にはファイル/フォルダを作らせない。
+    #     mrbgemは専用の雛形を作る「mrbgemを追加」で作る)
+    #   - それ以外のディレクトリ(app/配下、mrbgems/<gem>以下など): ファイルを作成/
+    #     フォルダを作成/削除
+    # 以前は作成をapp/配下に限定していたが、「どのフォルダでも作成できるように、
+    # ただしmrbgems/直下は不可」という要望で広げた(サーバ側はcreatable_path?)。
+    # プロジェクト直下(build_config.rbなど)のファイルには作成系を出さない
+    # (プロジェクト直下には作らない、というサーバ側の制限と合わせてある)。
 
     def open_tree_context_menu(node, event)
       kind = context_menu_kind(node)
@@ -1103,12 +1188,27 @@ module PicoRIDE
 
 
     def context_menu_kind(node)
-      return :file if node[:type] == :file
+      if node[:type] == :file
+        return creatable_dir?(parent_dir(node[:path])) ? :file : :root_file
+      end
       return :mrbgems_dir if node[:path] == MRBGEMS_DIRNAME
       return :app_dir if node[:path] == APP_DIRNAME
-      return :app_subdir if node[:path].start_with?("#{APP_DIRNAME}/")
 
       :other_dir
+    end
+
+    # pathの親ディレクトリ(プロジェクト直下なら'')。File.dirnameはPicoRuby.wasmでの
+    # 対応が不確かなので素の文字列分割で求める(extensionヘルパーと同じ理由)。
+    def parent_dir(path)
+      segments = path.to_s.split('/')
+      segments.pop
+      segments.join('/')
+    end
+
+    # その中にファイル/フォルダを作れるディレクトリか(プロジェクト直下と
+    # mrbgems/直下は不可。サーバ側のcreatable_path?と対応)。
+    def creatable_dir?(dir)
+      !dir.empty? && dir != MRBGEMS_DIRNAME
     end
 
     def close_tree_context_menu
@@ -1130,17 +1230,20 @@ module PicoRIDE
     def render_context_menu_items(menu)
       case menu[:kind]
       when :file
+        dir = parent_dir(menu[:path])
+        context_menu_item('ファイルを作成…') { show_new_file_dialog(dir) }
+        context_menu_item('フォルダを作成…') { show_new_folder_dialog(dir) }
+        context_menu_item('削除…') { confirm_delete_file(menu[:path]) }
+      when :root_file
         context_menu_item('削除…') { confirm_delete_file(menu[:path]) }
       when :app_dir
         context_menu_item('ファイルを作成…') { show_new_file_dialog(menu[:path]) }
         context_menu_item('フォルダを作成…') { show_new_folder_dialog(menu[:path]) }
-      when :app_subdir
-        context_menu_item('ファイルを作成…') { show_new_file_dialog(menu[:path]) }
-        context_menu_item('フォルダを作成…') { show_new_folder_dialog(menu[:path]) }
-        context_menu_item('削除…') { confirm_delete_folder(menu[:path]) }
       when :mrbgems_dir
         context_menu_item('mrbgemを追加…') { open_add_mrbgem_dialog }
       when :other_dir
+        context_menu_item('ファイルを作成…') { show_new_file_dialog(menu[:path]) }
+        context_menu_item('フォルダを作成…') { show_new_folder_dialog(menu[:path]) }
         context_menu_item('削除…') { confirm_delete_folder(menu[:path]) }
       end
     end

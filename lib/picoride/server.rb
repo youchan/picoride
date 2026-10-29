@@ -275,12 +275,32 @@ module Picoride
         true
       end
 
-      # 新規ファイル/新規フォルダの作成先を app/ 配下に限定するチェック。
-      # "app" 自身(プロジェクト作成時に既に存在する)は対象外で、その下に
-      # 最低1階層のセグメントが必要。
       def under_app_dir?(rel)
         prefix = "#{APP_DIRNAME}/"
         rel.start_with?(prefix) && rel.length > prefix.length
+      end
+
+      # 新規ファイル/新規フォルダを作れる場所かどうか。以前はapp/配下限定だったが、
+      # 「ツリーのどのフォルダでも作成できるように、ただしmrbgems/直下は不可」
+      # という要望で広げた。
+      # - プロジェクト直下(app/・mrbgems/・build_config.rbと同じ階層)には作らない
+      # - mrbgems/直下には作らない(mrbgemは「mrbgemを追加」で雛形ごと作る)。
+      #   mrbgems/<gem>/以下は、そのgemのディレクトリが既に存在する場合だけ許可する
+      #   (パスの途中で新しいgemディレクトリが勝手にできてしまわないように)
+      def creatable_path?(rel)
+        segments = rel.split("/")
+        return false if segments.length < 2
+        return true unless segments.first == MRBGEMS_DIRNAME
+
+        segments.length >= 3 && File.directory?(File.join(project_root, MRBGEMS_DIRNAME, segments[1]))
+      end
+
+      # 新規ファイルに許可する拡張子。app/はR2P2起動時にloadされるRubyスクリプト
+      # 置き場なので.rbのみ、それ以外(mrbgemのmrblib/・src/等)は編集できる
+      # 拡張子(ALLOWED_EXTENSIONS)すべて。
+      def creatable_extension?(rel)
+        ext = File.extname(rel)
+        under_app_dir?(rel) ? ext == NEW_FILE_EXTENSION : ALLOWED_EXTENSIONS.include?(ext)
       end
     end
 
@@ -546,9 +566,12 @@ module Picoride
 
       rel = payload["path"].to_s
       json_error(400, "path is required") if rel.empty?
-      json_error(400, "unsupported file type") unless File.extname(rel) == NEW_FILE_EXTENSION
       json_error(400, "invalid path") unless valid_relative_path?(rel)
-      json_error(400, "files can only be created under #{APP_DIRNAME}/") unless under_app_dir?(rel)
+      json_error(400, "cannot create files here") unless creatable_path?(rel)
+      unless creatable_extension?(rel)
+        allowed = under_app_dir?(rel) ? [NEW_FILE_EXTENSION] : ALLOWED_EXTENSIONS
+        json_error(400, "unsupported file type (allowed: #{allowed.join(' ')})")
+      end
 
       full =
         begin
@@ -565,7 +588,7 @@ module Picoride
       { status: "ok", path: rel }.to_json
     end
 
-    # 新規フォルダを作成する(空ディレクトリ)。新規ファイルと同じくapp/配下のみ許可する。
+    # 新規フォルダを作成する(空ディレクトリ)。作れる場所は新規ファイルと同じ(creatable_path?)。
     post "/api/folders" do
       content_type :json
 
@@ -579,7 +602,7 @@ module Picoride
       rel = payload["path"].to_s
       json_error(400, "path is required") if rel.empty?
       json_error(400, "invalid path") unless valid_relative_path?(rel)
-      json_error(400, "folders can only be created under #{APP_DIRNAME}/") unless under_app_dir?(rel)
+      json_error(400, "cannot create folders here") unless creatable_path?(rel)
 
       full =
         begin
@@ -717,13 +740,18 @@ module Picoride
       Dir.children(mrbgems_dir).select { |name| File.directory?(File.join(mrbgems_dir, name)) }.sort
     end
 
-    # 最小構成のmrbgem.rake(mrbgemとして成立する最低限の内容)。
+    # 「mrbgemを追加」で作るmrbgem.rakeのテンプレート。gem名は作成したmrbgemの名前、
+    # licenseはMITを入れ、authorとsummaryはユーザーが書き換えるプレースホルダーにしてある。
+    # nameはvalid_name?(英数字・_・-のみ)を通っているのでシングルクォートにそのまま埋め込める。
+    MRBGEM_AUTHOR_PLACEHOLDER = "YOUR NAME"
+    MRBGEM_SUMMARY_PLACEHOLDER = "TODO: Write a short summary of this mrbgem"
+
     def mrbgem_rake_content(name)
       <<~RUBY
-        MRuby::Gem::Specification.new("#{name}") do |spec|
-          spec.license = "MIT"
-          spec.authors = "#{name}"
-          spec.summary = "#{name}"
+        MRuby::Gem::Specification.new('#{name}') do |spec|
+          spec.license = 'MIT'
+          spec.author  = '#{MRBGEM_AUTHOR_PLACEHOLDER}'
+          spec.summary = '#{MRBGEM_SUMMARY_PLACEHOLDER}'
         end
       RUBY
     end
