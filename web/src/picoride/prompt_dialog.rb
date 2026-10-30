@@ -17,10 +17,33 @@
 #   placeholder:   入力欄のプレースホルダ
 #   confirm_label: 確定ボタンのラベル(省略時 'OK')
 #   error:         エラーメッセージ(あれば表示)
+#   initial_value: 入力欄の初期値(省略可。「名前を変更」で現在の名前を入れておく用途)
+#   select_length: 初期値の先頭から何文字を選択状態にするか(省略時は全体。
+#                  ファイル名の変更で拡張子を除いた部分だけを選択するのに使う)
 #   on_confirm:    入力値(String)を渡して呼ばれるlambda
 #   on_cancel:     キャンセル時に呼ばれるlambda
+#
+# 初期値(initial_value)はcomponent_mountedで1回だけDOMに書き込む。呼び出し側
+# (App)はpreserve: trueで描画しているので、ダイアログを開いている間に親が
+# 再描画されても作り直されず、入力中の文字が初期値で上書きされることはない
+# (CLAUDE.md「【重大】子コンポーネントはpropsが変わると作り直される」の節参照)。
 module PicoRIDE
   class PromptDialog < Funicular::Component
+    def component_mounted
+      node = refs[:value_input]
+      return unless node
+
+      initial = props[:initial_value].to_s
+      node[:value] = initial unless initial.empty?
+      node.focus
+      return if initial.empty?
+
+      length = props[:select_length]
+      length = initial.length if length.nil? || length.to_i <= 0 || length.to_i > initial.length
+      node[:selectionStart] = 0
+      node[:selectionEnd] = length.to_i
+    end
+
     def render
       div(class: 'dialog-overlay') do
         div(class: 'dialog prompt-dialog') do

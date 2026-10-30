@@ -668,6 +668,72 @@ module Picoride
       { status: "ok", path: rel }.to_json
     end
 
+    # ファイル/フォルダの名前を変更する(同じフォルダ内でのリネームのみ。移動はしない)。
+    # ツリーのコンテキストメニュー(「名前を変更」)から呼ばれる。
+    # body(JSON): { path: 変更対象の相対パス, name: 新しい名前(/を含まない) }
+    #
+    # - プロジェクト直下のもの(app/・mrbgems/・build_config.rb)は構造上必須なので
+    #   変更させない(UIでもメニューを出していないが、APIを直接叩かれた場合の防御)
+    # - ファイルの拡張子は新規作成と同じ制限(app/配下は.rbのみ、それ以外は
+    #   ALLOWED_EXTENSIONS)。リネームで一覧に出ない拡張子にしてしまうのを防ぐ
+    # - mrbgems/直下(gemのディレクトリ)の名前はmrbgem名と同じ規則で検証する
+    post "/api/rename" do
+      content_type :json
+
+      payload =
+        begin
+          JSON.parse(request.body.read)
+        rescue JSON::ParserError
+          json_error(400, "invalid json body")
+        end
+
+      rel = payload["path"].to_s
+      name = payload["name"].to_s.strip
+      json_error(400, "path is required") if rel.empty?
+      json_error(400, "name is required") if name.empty?
+      json_error(400, "invalid path") unless valid_relative_path?(rel)
+      json_error(400, "invalid name") if name.include?("/") || name.include?("\\") || !valid_relative_path?(name)
+
+      segments = rel.split("/")
+      json_error(400, "cannot rename this item") if segments.length < 2
+
+      parent = segments[0..-2].join("/")
+      new_rel = "#{parent}/#{name}"
+
+      full, new_full =
+        begin
+          [safe_path(project_root, rel), safe_path(project_root, new_rel)]
+        rescue ArgumentError
+          json_error(400, "invalid path")
+        end
+
+      if File.file?(full)
+        json_error(400, "unsupported file type") unless ALLOWED_EXTENSIONS.include?(File.extname(full))
+        unless creatable_extension?(new_rel)
+          allowed = under_app_dir?(new_rel) ? [NEW_FILE_EXTENSION] : ALLOWED_EXTENSIONS
+          json_error(400, "unsupported file type (allowed: #{allowed.join(' ')})")
+        end
+      elsif File.directory?(full)
+        if parent == MRBGEMS_DIRNAME && !valid_name?(name)
+          json_error(400, "invalid mrbgem name (letters, digits, _ and - only)")
+        end
+      else
+        json_error(404, "not found")
+      end
+
+      halt({ status: "ok", path: rel, new_path: new_rel }.to_json) if new_rel == rel
+
+      # 大文字小文字だけを変えるリネームは、大文字小文字を区別しないファイルシステム
+      # (macOSの既定など)では「既に存在する」と判定されてしまうので、同一ファイルなら許可する
+      if File.exist?(new_full) && !File.identical?(full, new_full)
+        json_error(409, "already exists")
+      end
+
+      File.rename(full, new_full)
+
+      { status: "ok", path: rel, new_path: new_rel }.to_json
+    end
+
     # --- プロジェクト設定(ターゲット・VM・USB Console) ----------------------
     #
     # 以前はビルドボタンを押すたびにダイアログでVM/USB Consoleを選ばせ、ターゲット

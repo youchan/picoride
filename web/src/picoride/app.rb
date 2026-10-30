@@ -72,7 +72,9 @@ module PicoRIDE
         project_config: default_project_config,
         file_menu_open: false,
         target_menu_open: false,
-        prompt_dialog: nil, # { kind:, title:, label:, placeholder:, confirm_label:, error:, context_dir: } または nil
+        # { kind:, title:, label:, placeholder:, confirm_label:, error:, context_dir:,
+        #   initial_value:, select_length:, target_path: } または nil
+        prompt_dialog: nil,
         # { path:, parent:, entries:, loading:, error:, creating:, create_error:, open_error: } または nil(閉じている)。
         # 「プロジェクトを開く」のディレクトリブラウザ(DirectoryBrowserDialog)の状態。
         project_browser: nil,
@@ -135,11 +137,14 @@ module PicoRIDE
 
         if state[:prompt_dialog]
           component(PromptDialog,
+            preserve: true,
             title: state[:prompt_dialog][:title],
             label: state[:prompt_dialog][:label],
             placeholder: state[:prompt_dialog][:placeholder],
             confirm_label: state[:prompt_dialog][:confirm_label],
             error: state[:prompt_dialog][:error],
+            initial_value: state[:prompt_dialog][:initial_value],
+            select_length: state[:prompt_dialog][:select_length],
             on_confirm: ->(value) { handle_prompt_confirm(value) },
             on_cancel: -> { patch(prompt_dialog: nil) }
           )
@@ -959,6 +964,7 @@ module PicoRIDE
       when :add_mrbgem then add_mrbgem(name)
       when :new_file then create_file(to_full_path(dialog[:context_dir], name))
       when :new_folder then create_folder(to_full_path(dialog[:context_dir], name))
+      when :rename then rename_entry(dialog[:target_path], name)
       end
     end
 
@@ -1078,7 +1084,10 @@ module PicoRIDE
     #   - "mrbgems" 自身: mrbgemを追加のみ(直下にはファイル/フォルダを作らせない。
     #     mrbgemは専用の雛形を作る「mrbgemを追加」で作る)
     #   - それ以外のディレクトリ(app/配下、mrbgems/<gem>以下など): ファイルを作成/
-    #     フォルダを作成/削除
+    #     フォルダを作成/名前を変更/削除
+    # 「名前を変更」はファイル(プロジェクト直下以外)とそれ以外のディレクトリにだけ出す。
+    # app/・mrbgems/・build_config.rbはプロジェクトの構造上必須なので変更させない
+    # (サーバ側のPOST /api/renameでも同じ制限をしている)。
     # 以前は作成をapp/配下に限定していたが、「どのフォルダでも作成できるように、
     # ただしmrbgems/直下は不可」という要望で広げた(サーバ側はcreatable_path?)。
     # プロジェクト直下(build_config.rbなど)のファイルには作成系を出さない
@@ -1143,6 +1152,7 @@ module PicoRIDE
         dir = parent_dir(menu[:path])
         context_menu_item('ファイルを作成…') { show_new_file_dialog(dir) }
         context_menu_item('フォルダを作成…') { show_new_folder_dialog(dir) }
+        context_menu_item('名前を変更…') { show_rename_dialog(menu[:path], :file) }
         context_menu_item('削除…') { confirm_delete_file(menu[:path]) }
       when :root_file
         context_menu_item('削除…') { confirm_delete_file(menu[:path]) }
@@ -1154,6 +1164,7 @@ module PicoRIDE
       when :other_dir
         context_menu_item('ファイルを作成…') { show_new_file_dialog(menu[:path]) }
         context_menu_item('フォルダを作成…') { show_new_folder_dialog(menu[:path]) }
+        context_menu_item('名前を変更…') { show_rename_dialog(menu[:path], :dir) }
         context_menu_item('削除…') { confirm_delete_folder(menu[:path]) }
       end
     end
@@ -1162,6 +1173,84 @@ module PicoRIDE
     # 開く/削除するなど)を実行する。
     def context_menu_item(label, &action)
       button(class: 'context-menu-item', onclick: -> { close_tree_context_menu; action.call }) { label }
+    end
+
+    # --- 名前の変更 --------------------------------------------------------
+    #
+    # 同じフォルダ内での名前の変更だけを扱う(別のフォルダへの移動はしない)。
+    # 入力欄には現在の名前を初期値として入れ、ファイルなら拡張子を除いた部分だけを
+    # 選択状態にする(PromptDialogのinitial_value/select_length)。
+
+    def show_rename_dialog(path, type)
+      name = path.to_s.split('/').last.to_s
+      ext = type == :file ? extension(name) : ''
+      select_length = ext.empty? ? name.length : name.length - ext.length - 1
+      note = type == :file ? rename_extension_note(path) : nil
+
+      patch(file_menu_open: false, context_menu: nil, prompt_dialog: {
+        kind: :rename,
+        title: '名前を変更',
+        label: note ? "#{path} の新しい名前。#{note}" : "#{path} の新しい名前",
+        placeholder: name,
+        confirm_label: '変更',
+        error: nil,
+        initial_value: name,
+        select_length: select_length,
+        target_path: path
+      })
+    end
+
+    # 新規ファイルと同じ拡張子の制限(サーバ側のcreatable_extension?と対応)。
+    def rename_extension_note(path)
+      new_file_extension_note(parent_dir(path))
+    end
+
+    def rename_entry(path, name)
+      if name.include?('/')
+        patch(prompt_dialog: state[:prompt_dialog].merge(error: '名前に / は使えません'))
+        return
+      end
+
+      Funicular::HTTP.post('/api/rename', { path: path, name: name }) do |response|
+        if response.ok
+          new_path = value_of(response.data, 'new_path') || path
+          apply_rename(path, new_path)
+        else
+          prompt_dialog_error(response.error_message)
+        end
+      end
+    end
+
+    # 名前が変わったファイル(またはその親フォルダ)を開いていたら、エディタの
+    # 編集中の内容はそのままにパスだけ付け替える(未保存の変更も失われない)。
+    # 折りたたみ状態も新しいパスに引き継ぐ。
+    def apply_rename(old_path, new_path)
+      if old_path == new_path
+        patch(prompt_dialog: nil)
+        return
+      end
+
+      patch(
+        prompt_dialog: nil,
+        status: '名前を変更しました',
+        status_kind: 'ok',
+        current_path: remap_path(state[:current_path], old_path, new_path),
+        collapsed_dirs: state[:collapsed_dirs].map { |p| remap_path(p, old_path, new_path) }
+      )
+      load_file_list
+      load_dir_list
+    end
+
+    # pathがold_path自身かその配下なら、先頭をnew_pathに置き換えたパスを返す。
+    # 正規表現は使わない(to_full_pathのコメント参照。PicoRuby.wasmのRegexpは\A非対応)。
+    def remap_path(path, old_path, new_path)
+      return path if path.nil?
+      return new_path if path == old_path
+
+      prefix = "#{old_path}/"
+      return path unless path.start_with?(prefix)
+
+      "#{new_path}/#{path[prefix.length, path.length - prefix.length]}"
     end
 
     # --- 削除 --------------------------------------------------------------
