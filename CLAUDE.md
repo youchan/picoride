@@ -1103,6 +1103,44 @@ JSネイティブでもRubyブロックである時点でPicoRuby.wasmを経由�
   不正なgem名/`..`/ドット始まり/存在しないパスを確認した。ブラウザでの
   動作確認(ダイアログの初期値・選択範囲、ツリーの更新)は未実施
 
+## `app/` → `home/` に改名し、`lib/` を追加(実機のファイルシステムと揃えた)
+
+「app.rbを置く場所は(実機の)homeなので、app/の代わりにhome/にしてほしい。
+picorubyのファイルシステムの/libにあたるlib/もほしい」という要望で、
+プロジェクト直下の構成を実機のファイルシステムに合わせた:
+
+```
+home/            # → 実機の/home。/home/app.rbはmain_task.rbが起動時に自動でload
+  app.rb
+lib/             # → 実機の/lib。requireの探索パス
+mrbgems/
+build_config.rb
+```
+
+- `/lib`が`require`の探索パスになっている根拠: picoruby本体の
+  `mrbgems/picoruby-shell/mrblib/shell.rb`の`Shell.setup_system_files`が
+  `$LOAD_PATH.clear; $LOAD_PATH << "#{root}/lib"`している(起動時に
+  `main_task.rb`から呼ばれる)。同じメソッドが`bin home etc ... lib`ディレクトリを
+  無ければ作る。`picoruby-require`の`require`は`$LOAD_PATH`を順に探し、
+  `.mrb`→`.rb`の順で見る
+- サーバ: `APP_DIRNAME`を廃止し`HOME_DIRNAME`/`LIB_DIRNAME`/`DEVICE_DIRNAMES`を追加。
+  `under_app_dir?`→`under_device_dir?`(home/・lib/配下の新規ファイルは`.rb`のみ)。
+  削除・名前変更から守るディレクトリは`PROTECTED_DIRNAMES`(home・lib・mrbgems)。
+  `ensure_project_scaffold`は`home/app.rb`・`lib/`・`build_config.rb`を作る
+- ESP32ビルド: `home/`・`lib/`をそれぞれ`storage/home/`・`storage/lib/`へ
+  (空にしてから)コピーする。R2P2-ESP32の`storage/`には元々`etc/`・`home/`しか
+  無いが、`littlefs_create_partition_image`は`storage/`以下をそのままイメージに
+  するので、`storage/lib/`を作れば実機の`/lib`になる
+- Pico/ターミナル: アップロードボタンを「home/ と lib/ をアップロード」にし、
+  `home/foo.rb`→`/home/foo.rb`、`lib/bar.rb`→`/lib/bar.rb`に送る
+  (`App#terminal_device_files`)
+- フロント: ツリーには`home`・`lib`を(ディスクに無くても)常に出す
+  (`file_tree_nodes`)。既存プロジェクトにlib/が無くても、右クリック→
+  ファイルを作成で`POST /api/files`が親ディレクトリごと作る。コンテキストメニューは
+  旧`:app_dir`を`:device_dir`にして、home・lib自身には作成系のみ出す
+- **移行処理は入れていない**。既存プロジェクトの`app/`はビルドにもアップロードにも
+  使われなくなるので、`git mv app home`等で手動で移す(sample_projects/soundも同様)
+
 ## gemとして配布する構成への変更(classic → modular Sinatra、`app/`廃止)
 
 Sinatraアプリ本体を`gem install`で配布することを前提に、2つの変更をした。

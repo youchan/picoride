@@ -26,10 +26,12 @@ require 'crc'
 # 作り直される」の節参照)。
 module PicoRIDE
   class App < Funicular::Component
-    # プロジェクト内の特別なディレクトリ名。app.rb側のAPP_DIRNAME/MRBGEMS_DIRNAMEと
-    # 対応(サーバとフロントで別プロセス=別Rubyランタイムなので定数は共有できず、
-    # 両側に定義してある)。
-    APP_DIRNAME = 'app'
+    # プロジェクト内の特別なディレクトリ名。server.rb側のHOME_DIRNAME/LIB_DIRNAME/
+    # MRBGEMS_DIRNAMEと対応(サーバとフロントで別プロセス=別Rubyランタイムなので
+    # 定数は共有できず、両側に定義してある)。home/・lib/は実機の/home・/libに対応する。
+    HOME_DIRNAME = 'home'
+    LIB_DIRNAME = 'lib'
+    DEVICE_DIRNAMES = [HOME_DIRNAME, LIB_DIRNAME]
     MRBGEMS_DIRNAME = 'mrbgems'
 
     # PicoModemプロトコル定数(picoruby-picomodemのmrblib/picomodem.rbと対応)
@@ -263,7 +265,7 @@ module PicoRIDE
 
     def handle_terminal_upload(event)
       event.preventDefault
-      upload_app_directory
+      upload_device_directories
     end
 
     private
@@ -330,17 +332,21 @@ module PicoRIDE
       { class: ext, label: ext }
     end
 
-    # state[:files] (例: ["app/app.rb", "mrbgems/picoruby_hello_world/mrbgem.rake"]) を
+    # state[:files] (例: ["home/app.rb", "mrbgems/picoruby_hello_world/mrbgem.rake"]) を
     # "/" 区切りで分解し、ディレクトリはまとめてネストしたノード配列に組み立てる。
     # 各階層でディレクトリを先に、それぞれ名前順に並べる。
     #
     # state[:dirs](GET /api/dirsで取得した、中身が空のものも含む全ディレクトリ)も
     # 合わせて挿入する。state[:files]だけからではファイルを1つも含まない空の
     # フォルダを表現できない(パスの並びにディレクトリ単体のエントリが出てこないため)。
+    #
+    # home/・lib/は実際にはまだ無くても(既存のプロジェクトにlib/が無い場合など)
+    # 常にツリーに出す。右クリックからファイルを作ればサーバ側(POST /api/files)が
+    # 親ディレクトリごと作るので、わざわざフォルダを作る手順を踏まなくて済む。
     def file_tree_nodes
       root = {}
       state[:files].each { |path| insert_file_tree_path(root, path.split('/'), '') }
-      state[:dirs].each { |path| insert_file_tree_dir_path(root, path.split('/'), '') }
+      (state[:dirs] + DEVICE_DIRNAMES).each { |path| insert_file_tree_dir_path(root, path.split('/'), '') }
       sorted_file_tree_nodes(root)
     end
 
@@ -396,12 +402,12 @@ module PicoRIDE
     # 直接つなぎ、xterm.jsでターミナルとして表示する。ビルド/インストールとは違い
     # サーバは一切関与しない(ブラウザ⇔実機のUSBが直結)。
     #
-    # 「app/ をアップロード」ボタンは、R2P2のシェル(picoruby-shell)がプロンプトで
+    # 「home/ と lib/ をアップロード」ボタンは、R2P2のシェル(picoruby-shell)がプロンプトで
     # Ctrl-B(STX, 0x02)を受け取るとPicoModemセッション(picoruby-picomodem。
     # picoruby-shellのデフォルト依存gemなので、R2P2-ESP32の標準ビルドには常に
     # 含まれている。R2P2-ESP32/components/picoruby-esp32/picoruby/mrbgems/
     # picoruby-shell/mrbgem.rake 参照)に入る仕組みを使い、現在のプロジェクトの
-    # app/以下をファイルごとに実機の/home/以下へ書き込む。PicoModemは1セッションに
+    # home/・lib/以下をファイルごとに実機の/home/・/lib/以下へ書き込む。PicoModemは1セッションに
     # つき1ファイルのFILE_WRITEしか処理せずシェルへ戻るため、複数ファイルは
     # 「Ctrl-B送信→ACK待ち→FILE_WRITE」をファイルごとに繰り返す。
     #
@@ -435,9 +441,9 @@ module PicoRIDE
 
     def render_terminal_upload_button
       if terminal_connected? && !state[:terminal_uploading]
-        button(class: 'terminal-upload', onclick: :handle_terminal_upload) { 'app/ をアップロード' }
+        button(class: 'terminal-upload', onclick: :handle_terminal_upload) { 'home/ と lib/ をアップロード' }
       else
-        button(class: 'terminal-upload', disabled: true) { state[:terminal_uploading] ? 'アップロード中…' : 'app/ をアップロード' }
+        button(class: 'terminal-upload', disabled: true) { state[:terminal_uploading] ? 'アップロード中…' : 'home/ と lib/ をアップロード' }
       end
     end
 
@@ -590,15 +596,15 @@ module PicoRIDE
       @terminal_port&.write(str)
     end
 
-    # --- app/ のアップロード(PicoModemプロトコル) ---------------------------
+    # --- home/・lib/ のアップロード(PicoModemプロトコル) --------------------
 
-    def upload_app_directory
+    def upload_device_directories
       return if state[:terminal_uploading]
       return unless terminal_connected?
 
-      files = terminal_app_files
+      files = terminal_device_files
       if files.empty?
-        patch(terminal_upload_log: ['app/ 以下にアップロード可能なファイルがありません'])
+        patch(terminal_upload_log: ['home/ と lib/ にアップロード可能なファイルがありません'])
         return
       end
 
@@ -607,16 +613,18 @@ module PicoRIDE
     end
 
     # state[:files](現在のプロジェクトのALLOWED_EXTENSIONSファイル一覧)から
-    # "app/"配下だけを取り出し、[プロジェクト内の相対パス, 実機上のパス]の
-    # ペアにする。POST /api/buildがapp/以下をstorage/home/へコピーする
-    # (=実機からは/home/以下に見える)のと対応を合わせてある。
-    def terminal_app_files
+    # home/・lib/配下だけを取り出し、[プロジェクト内の相対パス, 実機上のパス]の
+    # ペアにする(home/foo.rb → /home/foo.rb、lib/bar.rb → /lib/bar.rb)。
+    # ESP32のビルドがhome/・lib/をstorage/home/・storage/lib/へコピーする
+    # (=実機からは/home/・/lib/以下に見える)のと対応を合わせてある。
+    def terminal_device_files
       result = []
       (state[:files] || []).each do |path|
-        next unless path.start_with?('app/')
-        relative = path.sub('app/', '')
-        next if relative.empty?
-        result << [path, "/home/#{relative}"]
+        DEVICE_DIRNAMES.each do |dir|
+          prefix = "#{dir}/"
+          next unless path.start_with?(prefix) && path.length > prefix.length
+          result << [path, "/#{path}"]
+        end
       end
       result
     end
@@ -896,20 +904,20 @@ module PicoRIDE
       })
     end
 
-    # 新規ファイル・新しいフォルダは、実機起動スクリプトの置き場であるapp/配下だけを
-    # 対象にしている(app.rb側のunder_app_dir?と対応)。「ファイル」メニューからは
-    # app/を省いた相対パス(ネストしたパスも可)を、ツリーのコンテキストメニューからは
-    # 右クリックしたディレクトリ内でのファイル名だけを入力させる。どちらもcontext_dir
-    # (前者は固定で'app'、後者は右クリックしたディレクトリのpath)を基準にした相対パス
+    # 新規ファイル・新しいフォルダは、「ファイル」メニューからは実機の/homeに対応する
+    # home/を基準に、home/を省いた相対パス(ネストしたパスも可)を、ツリーの
+    # コンテキストメニューからは右クリックしたディレクトリ内でのファイル名だけを
+    # 入力させる。どちらもcontext_dir
+    # (前者は固定で'home'、後者は右クリックしたディレクトリのpath)を基準にした相対パス
     # という点は同じなので、show_new_file_dialog/show_new_folder_dialogに集約している。
     def open_new_file_dialog
       return if state[:project].nil?
-      show_new_file_dialog('app')
+      show_new_file_dialog(HOME_DIRNAME)
     end
 
     def open_new_folder_dialog
       return if state[:project].nil?
-      show_new_folder_dialog('app')
+      show_new_folder_dialog(HOME_DIRNAME)
     end
 
     def show_new_file_dialog(context_dir)
@@ -917,7 +925,7 @@ module PicoRIDE
         kind: :new_file,
         title: '新規ファイル',
         label: context_dir_label(context_dir, new_file_extension_note(context_dir)),
-        placeholder: context_dir == 'app' ? 'utils/foo.rb' : 'foo.rb',
+        placeholder: context_dir == HOME_DIRNAME ? 'utils/foo.rb' : 'foo.rb',
         confirm_label: '作成',
         error: nil,
         context_dir: context_dir
@@ -937,15 +945,20 @@ module PicoRIDE
     end
 
     def context_dir_label(context_dir, note)
-      base = context_dir == 'app' ? 'app/ からの相対パス' : "#{context_dir}/ 内の名前"
+      base = context_dir == HOME_DIRNAME ? 'home/ からの相対パス' : "#{context_dir}/ 内の名前"
       note ? "#{base}。#{note}" : base
     end
 
     # 新規ファイルに使える拡張子の説明(サーバ側のcreatable_extension?と対応)。
-    # app/配下は起動スクリプト置き場なので.rbのみ、それ以外は編集できる拡張子すべて。
+    # home/・lib/配下は実機に置くRubyスクリプトなので.rbのみ、それ以外は
+    # 編集できる拡張子すべて。
     def new_file_extension_note(context_dir)
-      in_app = context_dir == APP_DIRNAME || context_dir.start_with?("#{APP_DIRNAME}/")
-      in_app ? '拡張子は.rb' : '拡張子は .rb / .c / .h / .rake'
+      device_dir?(context_dir) ? '拡張子は.rb' : '拡張子は .rb / .c / .h / .rake'
+    end
+
+    # home/・lib/自身またはその配下か。
+    def device_dir?(dir)
+      DEVICE_DIRNAMES.any? { |d| dir == d || dir.start_with?("#{d}/") }
     end
 
     # PromptDialogの確定ボタン(または入力欄でのEnter)から呼ばれる。
@@ -1079,14 +1092,14 @@ module PicoRIDE
     # 右クリックされたnode(type/path)を受け取ってメニューの中身を決めるのはこちら側の
     # 責務にしてある。出す項目はnodeの種類によって変える:
     #   - ファイル: (そのファイルと同じフォルダに)ファイルを作成/フォルダを作成、削除
-    #   - "app" 自身: ファイルを作成/フォルダを作成(削除は出さない。プロジェクトの
-    #     実行スクリプト置き場である app/ 自体を消せてしまうと壊れるため)
+    #   - "home"・"lib" 自身: ファイルを作成/フォルダを作成(削除・名前変更は出さない。
+    #     実機の/home・/libに対応するディレクトリ自体を消せてしまうと壊れるため)
     #   - "mrbgems" 自身: mrbgemを追加のみ(直下にはファイル/フォルダを作らせない。
     #     mrbgemは専用の雛形を作る「mrbgemを追加」で作る)
-    #   - それ以外のディレクトリ(app/配下、mrbgems/<gem>以下など): ファイルを作成/
+    #   - それ以外のディレクトリ(home/・lib/配下、mrbgems/<gem>以下など): ファイルを作成/
     #     フォルダを作成/名前を変更/削除
     # 「名前を変更」はファイル(プロジェクト直下以外)とそれ以外のディレクトリにだけ出す。
-    # app/・mrbgems/・build_config.rbはプロジェクトの構造上必須なので変更させない
+    # home/・lib/・mrbgems/・build_config.rbはプロジェクトの構造上必須なので変更させない
     # (サーバ側のPOST /api/renameでも同じ制限をしている)。
     # 以前は作成をapp/配下に限定していたが、「どのフォルダでも作成できるように、
     # ただしmrbgems/直下は不可」という要望で広げた(サーバ側はcreatable_path?)。
@@ -1111,7 +1124,7 @@ module PicoRIDE
         return creatable_dir?(parent_dir(node[:path])) ? :file : :root_file
       end
       return :mrbgems_dir if node[:path] == MRBGEMS_DIRNAME
-      return :app_dir if node[:path] == APP_DIRNAME
+      return :device_dir if DEVICE_DIRNAMES.include?(node[:path])
 
       :other_dir
     end
@@ -1156,7 +1169,7 @@ module PicoRIDE
         context_menu_item('削除…') { confirm_delete_file(menu[:path]) }
       when :root_file
         context_menu_item('削除…') { confirm_delete_file(menu[:path]) }
-      when :app_dir
+      when :device_dir
         context_menu_item('ファイルを作成…') { show_new_file_dialog(menu[:path]) }
         context_menu_item('フォルダを作成…') { show_new_folder_dialog(menu[:path]) }
       when :mrbgems_dir

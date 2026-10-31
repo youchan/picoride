@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Picoride
-  VERSION = "0.1.1"
+  VERSION = "0.1.2"
 
   # ビルド専用Dockerイメージ(docker/esp32・docker/pico)のDocker Hub上の名前の接頭辞。
   # 実際のイメージ名は "#{BUILDER_IMAGE_PREFIX}-<esp32|pico>:#{VERSION}"。

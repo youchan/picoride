@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    picoride (0.1.1)
+    picoride (0.1.2)
       perfect_toml
       puma
       rackup
@@ -82,7 +82,7 @@ CHECKSUMS
   mustermann (3.1.1) sha256=4c6170c7234d5499c345562ba7c7dfe73e1754286dcc1abb053064d66a127198
   nio4r (2.7.5) sha256=6c90168e48fb5f8e768419c93abb94ba2b892a1d0602cb06eef16d8b7df1dca1
   perfect_toml (0.9.1) sha256=f494a27922eda2ad848f23d4087470261e75cf0045cbbdbcc74a16fd156bbf87
-  picoride (0.1.1)
+  picoride (0.1.2)
   power_assert (3.1.0) sha256=fefe98ed5d3140628138f3f9f9194d6ece01f1320e69700d3c928adca7518251
   pp (0.6.4) sha256=dfcb0fce700c41456265922884f9fe195d7fbb0674a3578e6c0f69588e82b570
   prettyprint (0.2.0) sha256=2bc9e15581a94742064a3cc8b0fb9d45aae3d03a1baa6ef80922627a0766f193

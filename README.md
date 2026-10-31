@@ -75,10 +75,24 @@ in `lib/picoride/version.rb`; `IMAGE_PREFIX=...` overrides it for publishing
 - A Pico build produces a `.uf2`. Use "UF2をダウンロード" in the menu bar, then
   hold BOOTSEL while plugging in the Pico and copy the file to the drive that
   appears (`RPI-RP2` / `RP2350`).
-- Unlike ESP32, `app/` is not baked into the firmware. Transfer it with
-  "app/ をアップロード" on the Terminal tab.
+- Unlike ESP32, `home/` and `lib/` are not baked into the firmware. Transfer
+  them with "home/ と lib/ をアップロード" on the Terminal tab.
 - `pico` / `pico_w` (RP2040) support only FemtoRuby (mruby/c);
   `pico2` / `pico2_w` support both FemtoRuby and PicoRuby (mruby).
+
+## Project layout
+
+```
+my_project/
+  home/            # -> /home on the device. /home/app.rb runs at boot
+    app.rb
+  lib/             # -> /lib on the device. On $LOAD_PATH, so `require 'foo'` finds lib/foo.rb
+  mrbgems/         # every gem in here is built into the firmware
+  build_config.rb  # extra build settings (e.g. conf.gems.reject! ...)
+```
+
+On ESP32, `home/` and `lib/` are written into the storage partition at build
+time. On Raspberry Pi Pico, send them with the Terminal tab's upload button.
 
 ## Run
 
@@ -88,7 +102,8 @@ in `lib/picoride/version.rb`; `IMAGE_PREFIX=...` overrides it for publishing
 
 Open http://localhost:4567 . On first load, open a project via File > Open
 Project (or the dropdown in the menu bar) and browse to, or create, a
-directory on disk — it gets an `app/` and `build_config.rb` automatically.
+directory on disk — an empty directory gets `home/app.rb`, `lib/` and
+`build_config.rb` automatically.
 Opened projects are remembered in `~/.picoride/project.toml`, so the last one
 you had open reopens automatically on the next server start.
 

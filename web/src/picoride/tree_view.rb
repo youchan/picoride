@@ -5,8 +5,8 @@
 # 一切知らない、純粋な表示コンポーネントにしてある。
 #
 # ノードの形(Hash、シンボルキー):
-#   ディレクトリ: { name: "app", path: "app", type: :dir, children: [...] }
-#   ファイル    : { name: "app.rb", path: "app/app.rb", type: :file }
+#   ディレクトリ: { name: "home", path: "home", type: :dir, children: [...] }
+#   ファイル    : { name: "app.rb", path: "home/app.rb", type: :file }
 # children は同じ形のノードの配列。ソート順など「どの順で並べるか」は
 # 呼び出し側がnodesを組み立てる時点で決めておくこと(このコンポーネントは
 # 渡された順にそのまま描画するだけ)。

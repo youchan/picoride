@@ -34,7 +34,7 @@ module Picoride
       end
     end
 
-    # 編集対象のプロジェクト(app/・mrbgems/・build_config.rbを持つディレクトリ)。
+    # 編集対象のプロジェクト(home/・lib/・mrbgems/・build_config.rbを持つディレクトリ)。
     # 固定ディレクトリ・環境変数での既定値は持たず、UI(メニューバーのプロジェクト
     # 切り替えドロップダウン、または「ファイル」>「プロジェクトを開く」)から
     # 都度ユーザーが指定して開く方式にしてある(「よくあるファイルビューアの
@@ -132,15 +132,21 @@ module Picoride
     # ハイフンのみに絞ってある。
     MRBGEM_NAME_PATTERN = /\A[A-Za-z0-9_-]+\z/.freeze
 
-    # 1プロジェクト = app/・mrbgems/・build_config.rbをまとめて持つディレクトリ、
-    # という単位にしてある。
-    APP_DIRNAME = "app"
+    # 1プロジェクト = home/・lib/・mrbgems/・build_config.rbをまとめて持つディレクトリ、
+    # という単位にしてある。home/とlib/は実機のファイルシステムの/home・/libに
+    # そのまま対応する(ESP32はビルド時にstorageパーティションへ、Picoはターミナルの
+    # アップロードで書き込む)。/home/app.rbは起動時にmain_task.rbが自動でloadし、
+    # /libはR2P2のシェルが$LOAD_PATHに入れる(picoruby-shellのShell.setup_system_files)
+    # ので、lib/に置いたファイルはrequireで読める。
+    HOME_DIRNAME = "home"
+    LIB_DIRNAME = "lib"
+    DEVICE_DIRNAMES = [HOME_DIRNAME, LIB_DIRNAME].freeze
     MRBGEMS_DIRNAME = "mrbgems"
+    # プロジェクトの構造上必須で、削除・名前変更させないディレクトリ。
+    PROTECTED_DIRNAMES = [HOME_DIRNAME, LIB_DIRNAME, MRBGEMS_DIRNAME].freeze
 
-    # 「ファイル」メニューからの新規ファイル/新規フォルダ作成は、実機の起動スクリプト
-    # である app/ 配下だけに限定する(mrbgems/ 以下は「mrbgemを追加」が専用の雛形を
-    # 用意するので対象外)。拡張子もRubyの.rbのみに絞る(app/はR2P2起動時にmain_task.rb
-    # がloadするRubyスクリプト置き場であり、.c/.h/.rakeを置く場所ではないため)。
+    # home/・lib/配下の新規ファイルは.rbのみ(実機のファイルシステムに置くRubyスクリプト
+    # であり、.c/.h/.rakeを置く場所ではないため)。
     NEW_FILE_EXTENSION = ".rb"
 
     # プロジェクト固有のビルド設定。ユーザーが直接編集できる普通のファイルという位置づけ
@@ -229,7 +235,8 @@ module Picoride
       end
 
       # 新しく開いた(あるいは初めて開く)プロジェクトに、起動スクリプトの土台
-      # (app/app.rb)とビルド設定ファイル(build_config.rb)を空で用意しておく。
+      # (home/app.rb)・ライブラリ置き場(lib/)・ビルド設定ファイル(build_config.rb)を
+      # 空で用意しておく。
       # 以前の「新しいプロジェクト」(ワークスペース配下に名前でサブディレクトリを
       # 作る機能)が担っていた雛形作成を、「プロジェクトを開く」
       # (DirectoryBrowserDialogで任意のディレクトリを指定・新規フォルダ作成して
@@ -248,8 +255,9 @@ module Picoride
       def ensure_project_scaffold(root)
         return unless Dir.empty?(root)
 
-        FileUtils.mkdir_p(File.join(root, APP_DIRNAME))
-        File.write(File.join(root, APP_DIRNAME, "app.rb"), "")
+        FileUtils.mkdir_p(File.join(root, HOME_DIRNAME))
+        FileUtils.mkdir_p(File.join(root, LIB_DIRNAME))
+        File.write(File.join(root, HOME_DIRNAME, "app.rb"), "")
         File.write(File.join(root, BUILD_CONFIG_FILENAME), "")
       end
 
@@ -275,15 +283,18 @@ module Picoride
         true
       end
 
-      def under_app_dir?(rel)
-        prefix = "#{APP_DIRNAME}/"
-        rel.start_with?(prefix) && rel.length > prefix.length
+      # home/・lib/(実機のファイルシステムに書き込まれるディレクトリ)の配下か。
+      def under_device_dir?(rel)
+        DEVICE_DIRNAMES.any? do |dir|
+          prefix = "#{dir}/"
+          rel.start_with?(prefix) && rel.length > prefix.length
+        end
       end
 
-      # 新規ファイル/新規フォルダを作れる場所かどうか。以前はapp/配下限定だったが、
+      # 新規ファイル/新規フォルダを作れる場所かどうか。以前はapp/(現home/)配下限定だったが、
       # 「ツリーのどのフォルダでも作成できるように、ただしmrbgems/直下は不可」
       # という要望で広げた。
-      # - プロジェクト直下(app/・mrbgems/・build_config.rbと同じ階層)には作らない
+      # - プロジェクト直下(home/・lib/・mrbgems/・build_config.rbと同じ階層)には作らない
       # - mrbgems/直下には作らない(mrbgemは「mrbgemを追加」で雛形ごと作る)。
       #   mrbgems/<gem>/以下は、そのgemのディレクトリが既に存在する場合だけ許可する
       #   (パスの途中で新しいgemディレクトリが勝手にできてしまわないように)
@@ -295,12 +306,12 @@ module Picoride
         segments.length >= 3 && File.directory?(File.join(project_root, MRBGEMS_DIRNAME, segments[1]))
       end
 
-      # 新規ファイルに許可する拡張子。app/はR2P2起動時にloadされるRubyスクリプト
+      # 新規ファイルに許可する拡張子。home/・lib/は実機に置くRubyスクリプトの
       # 置き場なので.rbのみ、それ以外(mrbgemのmrblib/・src/等)は編集できる
       # 拡張子(ALLOWED_EXTENSIONS)すべて。
       def creatable_extension?(rel)
         ext = File.extname(rel)
-        under_app_dir?(rel) ? ext == NEW_FILE_EXTENSION : ALLOWED_EXTENSIONS.include?(ext)
+        under_device_dir?(rel) ? ext == NEW_FILE_EXTENSION : ALLOWED_EXTENSIONS.include?(ext)
       end
     end
 
@@ -569,7 +580,7 @@ module Picoride
       json_error(400, "invalid path") unless valid_relative_path?(rel)
       json_error(400, "cannot create files here") unless creatable_path?(rel)
       unless creatable_extension?(rel)
-        allowed = under_app_dir?(rel) ? [NEW_FILE_EXTENSION] : ALLOWED_EXTENSIONS
+        allowed = under_device_dir?(rel) ? [NEW_FILE_EXTENSION] : ALLOWED_EXTENSIONS
         json_error(400, "unsupported file type (allowed: #{allowed.join(' ')})")
       end
 
@@ -619,7 +630,7 @@ module Picoride
     end
 
     # ファイルを削除する。ツリーのコンテキストメニュー(「削除」)から呼ばれる。
-    # 新規作成とは違いapp/配下に限定しない(mrbgemの.c/.h等、プロジェクト内の
+    # 新規作成とは違いhome/・lib/配下に限定しない(mrbgemの.c/.h等、プロジェクト内の
     # ALLOWED_EXTENSIONSファイルであればどこでも削除できる)。
     delete "/api/files" do
       content_type :json
@@ -642,9 +653,9 @@ module Picoride
       { status: "ok", path: rel }.to_json
     end
 
-    # フォルダを再帰的に削除する。app/自身・mrbgems/自身は構造上必須
-    # (app/はR2P2起動スクリプトの置き場所、mrbgems/は「mrbgemを追加」専用の
-    # 置き場所)なので削除させない。UIのコンテキストメニューでもこの2つには
+    # フォルダを再帰的に削除する。home/・lib/・mrbgems/自身は構造上必須
+    # (home/・lib/は実機の/home・/libに対応、mrbgems/は「mrbgemを追加」専用の
+    # 置き場所)なので削除させない。UIのコンテキストメニューでもこれらには
     # 「削除」を出していないが、APIを直接叩かれた場合の防御として二重にチェックする。
     delete "/api/folders" do
       content_type :json
@@ -652,7 +663,7 @@ module Picoride
       rel = params[:path].to_s
       json_error(400, "path is required") if rel.empty?
       json_error(400, "invalid path") unless valid_relative_path?(rel)
-      json_error(400, "cannot delete this folder") if rel == APP_DIRNAME || rel == MRBGEMS_DIRNAME
+      json_error(400, "cannot delete this folder") if PROTECTED_DIRNAMES.include?(rel)
 
       full =
         begin
@@ -672,9 +683,9 @@ module Picoride
     # ツリーのコンテキストメニュー(「名前を変更」)から呼ばれる。
     # body(JSON): { path: 変更対象の相対パス, name: 新しい名前(/を含まない) }
     #
-    # - プロジェクト直下のもの(app/・mrbgems/・build_config.rb)は構造上必須なので
+    # - プロジェクト直下のもの(home/・lib/・mrbgems/・build_config.rb)は構造上必須なので
     #   変更させない(UIでもメニューを出していないが、APIを直接叩かれた場合の防御)
-    # - ファイルの拡張子は新規作成と同じ制限(app/配下は.rbのみ、それ以外は
+    # - ファイルの拡張子は新規作成と同じ制限(home/・lib/配下は.rbのみ、それ以外は
     #   ALLOWED_EXTENSIONS)。リネームで一覧に出ない拡張子にしてしまうのを防ぐ
     # - mrbgems/直下(gemのディレクトリ)の名前はmrbgem名と同じ規則で検証する
     post "/api/rename" do
@@ -710,7 +721,7 @@ module Picoride
       if File.file?(full)
         json_error(400, "unsupported file type") unless ALLOWED_EXTENSIONS.include?(File.extname(full))
         unless creatable_extension?(new_rel)
-          allowed = under_app_dir?(new_rel) ? [NEW_FILE_EXTENSION] : ALLOWED_EXTENSIONS
+          allowed = under_device_dir?(new_rel) ? [NEW_FILE_EXTENSION] : ALLOWED_EXTENSIONS
           json_error(400, "unsupported file type (allowed: #{allowed.join(' ')})")
         end
       elsif File.directory?(full)
@@ -870,7 +881,7 @@ module Picoride
     # ビルド専用コンテナ(ファミリーごとのBUILDER_IMAGES)を使い捨てで起動し、
     # その中でinner_cmdを実行するコマンド文字列を組み立てる。state_dir(プロジェクト
     # ごとのビルド状態。ESP32ならR2P2-ESP32、Picoならpicoruby本体)を
-    # CONTAINER_STATE_MOUNTS[family]に、project_root(mrbgems/やapp/を含む
+    # CONTAINER_STATE_MOUNTS[family]に、project_root(mrbgems/やhome/を含む
     # プロジェクト本体)をCONTAINER_PROJECT_MOUNTにbind mountする。
     #
     # ESP32では idf.py / rake が ESP-IDF の export.sh を読み込んだシェルでしか
@@ -1043,10 +1054,10 @@ module Picoride
     # pico-sdkのcmakeビルド)を実行する。成果物の.uf2は
     # build/r2p2/{vm}/{board}/prod/ にできる(pico_uf2_path参照)。
     #
-    # ESP32と違い、app/以下をファームウェアに焼き込む仕組みは無い(R2P2はPicoの
+    # ESP32と違い、home/・lib/をファームウェアに焼き込む仕組みは無い(R2P2はPicoの
     # フラッシュをUSBマスストレージとして見せる方式で、ストレージのイメージを
-    # ビルド時に作らない)。app/はターミナルタブの「app/ をアップロード」
-    # (PicoModem)で書き込む。
+    # ビルド時に作らない)。home/・lib/はターミナルタブの「home/ と lib/ を
+    # アップロード」(PicoModem)で書き込む。
     #
     # r2p2のcmakeはmain_task.rbのコンパイルに`<picoruby>/bin/mrbc`を使うが、
     # cloneしたばかりのpicorubyにはこれが無く、r2p2タスク自体も作らない
@@ -1083,15 +1094,19 @@ module Picoride
 
     # ESP32: idf.py build。
     def esp32_build_inner_command(root, state_dir, project_config)
-      # プロジェクトのapp/以下を実機の起動スクリプトにする(storage/home/を参照する
-      # R2P2本来の仕組み。詳細は上のコメント参照)。前回このプロジェクトをビルドした
-      # ときの残骸が残らないよう、まずstorage/home/を空にしてからコピーし直す。
-      storage_home_dir = File.join(state_dir, "storage", "home")
-      FileUtils.mkdir_p(storage_home_dir)
-      FileUtils.rm_rf(Dir.glob(File.join(storage_home_dir, "*")))
-      project_app_dir = File.join(root, APP_DIRNAME)
-      if Dir.exist?(project_app_dir)
-        FileUtils.cp_r(Dir.glob(File.join(project_app_dir, "*")), storage_home_dir)
+      # プロジェクトのhome/・lib/を、storageパーティション(littlefs)のイメージの
+      # 元になるstorage/home/・storage/lib/へコピーする(実機からは/home・/libに見える。
+      # /home/app.rbは起動時に自動でloadされる)。前回このプロジェクトをビルドした
+      # ときの残骸が残らないよう、まず空にしてからコピーし直す(Dir.globの既定動作で
+      # ドット始まりのファイル(storage/home/.keep等)は消さない)。
+      DEVICE_DIRNAMES.each do |dirname|
+        storage_dir = File.join(state_dir, "storage", dirname)
+        FileUtils.mkdir_p(storage_dir)
+        FileUtils.rm_rf(Dir.glob(File.join(storage_dir, "*")))
+        project_dir = File.join(root, dirname)
+        if Dir.exist?(project_dir)
+          FileUtils.cp_r(Dir.glob(File.join(project_dir, "*")), storage_dir)
+        end
       end
 
       vm = project_config["vm"]
