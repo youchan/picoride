@@ -34,8 +34,13 @@
 #   on_save:   Ctrl+S / Cmd+S で呼ぶ
 module PicoRIDE
   class Editor < Funicular::Component
-    # 拡張子 → Prism の言語名(未知の拡張子は ruby 扱い。.rake も Ruby)
-    LANGUAGES = { 'rb' => 'ruby', 'rake' => 'ruby', 'c' => 'c', 'h' => 'c' }
+    # 拡張子 → Prism の言語名(未知の拡張子は ruby 扱い。.rake も Ruby)。
+    # html/js/css は www/(PicoRuby.wasm向けのWeb資産)で使う。Prism側の文法名は
+    # markup/javascript/css(index.erb で対応するコンポーネントを追加読み込みしてある)。
+    LANGUAGES = {
+      'rb' => 'ruby', 'rake' => 'ruby', 'c' => 'c', 'h' => 'c',
+      'html' => 'markup', 'js' => 'javascript', 'css' => 'css'
+    }
 
     def component_mounted
       sync_with_props

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PicoRuby Editor (Funicular)</title>
+  <title>PicoRIDE</title>
 
   <!-- スタイルは web/public/css/style.css をそのまま流用する -->
   <link rel="stylesheet" href="/css/style.css">
@@ -17,6 +17,10 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/components/prism-clike.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/components/prism-c.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/components/prism-ruby.min.js"></script>
+  <!-- www/(PicoRuby.wasm向けのWeb資産)のハイライト用。javascriptはclike依存なので上のprism-clikeより後。 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/components/prism-markup.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/components/prism-javascript.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/components/prism-css.min.js"></script>
 
   <!--
     ESP Web Tools (https://esphome.github.io/esp-web-tools/)。
@@ -104,6 +108,6 @@
     PicoRuby.wasm 本体。Funicular は同梱されている。
     text/ruby スクリプトを走査する側なので、必ず最後に置く。
   -->
-  <script src="https://cdn.jsdelivr.net/npm/@picoruby/wasm-wasi@4.0.2/dist/init.iife.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@picoruby/wasm-wasi@4.0.5/dist/init.iife.js"></script>
 </body>
 </html>

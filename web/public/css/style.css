@@ -164,6 +164,9 @@ html, body {
 
 .tree-icon.rb { background: #701516; color: #fff; }
 .tree-icon.c, .tree-icon.h { background: #283593; color: #fff; }
+.tree-icon.html { background: #e34c26; color: #fff; }
+.tree-icon.js { background: #f0db4f; color: #222; }
+.tree-icon.css { background: #264de4; color: #fff; }
 
 .tree-label {
   overflow: hidden;
@@ -311,8 +314,9 @@ button:disabled {
   opacity: 0.6;
 }
 
-/* Raspberry Pi Pico の「UF2をダウンロード」(<a download>)をボタンと同じ見た目にする */
-a.menu-download {
+/* Raspberry Pi Picoの「UF2をダウンロード」・PicoRuby.wasmの「プレビューを開く」
+   (いずれも<a>要素)をボタンと同じ見た目にする */
+a.menu-download, a.menu-preview {
   display: inline-block;
   background: var(--accent);
   color: #fff;
@@ -323,7 +327,7 @@ a.menu-download {
   cursor: pointer;
 }
 
-a.menu-download:hover {
+a.menu-download:hover, a.menu-preview:hover {
   background: var(--accent-hover);
 }
 

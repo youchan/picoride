@@ -164,5 +164,44 @@ module Picoride
     def patch_pico_build_config_hooks(state_dir)
       Dir.glob(File.join(state_dir, "build_config", "r2p2-*.rb")).each { |path| patch_build_config_hook(path) }
     end
+
+    # --- PicoRuby.wasm 用 ---------------------------------------------------
+    #
+    # ブラウザ向けのビルド(build_config/picoruby-wasm.rb)も同じpicoruby本体の
+    # リポジトリにある。Pico用(ensure_pico_checkout)とはプロジェクト内の状態
+    # ディレクトリを分けている(同時にPico/wasm両方をビルドしても互いの
+    # チェックアウトを壊さないように、server.rbのPLATFORM_FAMILIESごとに
+    # 独立したstate_dirを持たせる既存の方針と合わせてある)。
+    #
+    # pico-sdk・rp2040js(Pico/R2P2専用のサブモジュール)はwasmビルドに不要なので
+    # 取得しない。PICO_SKIPPED_SUBMODULESと同じ中身だが、「wasmビルドに要らない
+    # から取らない」という別の理由なので専用の定数にしてある。
+    WASM_SKIPPED_SUBMODULES = PICO_SKIPPED_SUBMODULES
+
+    # 完了判定はESP32/Pico側と同じREADY_MARKERで行う。
+    def ensure_wasm_checkout(state_dir)
+      return if File.file?(File.join(state_dir, READY_MARKER))
+
+      with_checkout_lock do
+        next if File.file?(File.join(state_dir, READY_MARKER))
+
+        unless File.directory?(File.join(state_dir, ".git"))
+          FileUtils.mkdir_p(File.dirname(state_dir))
+          run!("git", "clone", "--depth", "1", PICORUBY_REPO_URL, state_dir)
+        end
+
+        submodules = pico_submodule_paths(state_dir) - WASM_SKIPPED_SUBMODULES
+        run!("git", "-C", state_dir, "submodule", "update", "--init", "--recursive", "--", *submodules)
+
+        patch_wasm_build_config_hook(state_dir)
+        File.write(File.join(state_dir, READY_MARKER), "")
+      end
+    end
+
+    # build_config/picoruby-wasm.rb もR2P2-ESP32/Picoと同じ
+    # `MRuby::CrossBuild.new(...) do |conf| ... end` の形なので、同じフックを差し込む。
+    def patch_wasm_build_config_hook(state_dir)
+      patch_build_config_hook(File.join(state_dir, "build_config", "picoruby-wasm.rb"))
+    end
   end
 end

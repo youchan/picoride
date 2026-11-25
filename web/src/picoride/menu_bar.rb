@@ -248,10 +248,18 @@ module PicoRIDE
     # Raspberry Pi Pico: ブラウザから直接書き込む仕組みは使わず、ビルド成果物の
     # .uf2をダウンロードさせる(BOOTSELを押しながら接続して現れるドライブへ
     # ユーザーがコピーする)。<a download>をボタン風に見せている。
+    # PicoRuby.wasm: 実機への書き込み自体が無い(ブラウザでそのまま動く)ので、
+    # ビルド成果物(index.html一式)を新規タブで開く「プレビューを開く」だけ出す。
     def render_install_button
+      platform = value_of(props[:project_config], 'platform')
+
       if props[:project].to_s.empty?
         button(class: 'menu-install', disabled: true) { 'デバイスにインストール' }
-      elsif ProjectSettingsDialog.pico?(value_of(props[:project_config], 'platform'))
+      elsif ProjectSettingsDialog.wasm?(platform)
+        tag(:a, class: 'menu-install menu-preview', href: '/api/firmware/wasm/index.html', target: '_blank') do
+          'プレビューを開く'
+        end
+      elsif ProjectSettingsDialog.pico?(platform)
         tag(:a, class: 'menu-install menu-download', href: '/api/firmware/uf2', download: '',
                 title: 'BOOTSELボタンを押しながらPicoを接続し、現れたドライブへUF2ファイルをコピーしてください') do
           'UF2をダウンロード'

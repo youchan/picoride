@@ -83,11 +83,19 @@ module Picoride
     # ESP32用と同じ理由でプロジェクト直下のドット始まりのディレクトリにしてある。
     PICO_STATE_DIRNAME = ".r2p2-pico"
 
+    # PicoRuby.wasm用のビルド状態(picoruby本体のチェックアウト。Picoと同じ
+    # リポジトリだが、ビルド設定・サブモジュール構成が違うので状態ディレクトリは
+    # 分けてある。r2p2_state.rb の ensure_wasm_checkout参照)。
+    WASM_STATE_DIRNAME = ".picoruby-wasm"
+
     # ターゲット(設定ダイアログの「ターゲット」)をファミリーごとに分けたもの。
     # ファミリーによって使うビルド用イメージ・状態ディレクトリ・ビルド手順が切り替わる。
+    # wasmはターゲット自体が1種類しかない(チップの選択肢が無い、ブラウザで動く
+    # 単一のバイナリを作るだけ)。
     PLATFORM_FAMILIES = {
       "esp32" => %w[esp32 esp32c3 esp32c6 esp32h2 esp32p4 esp32s3],
-      "pico" => %w[pico pico_w pico2 pico2_w]
+      "pico" => %w[pico pico_w pico2 pico2_w],
+      "wasm" => %w[wasm]
     }.freeze
     PLATFORM_TARGETS = PLATFORM_FAMILIES.values.flatten.freeze
 
@@ -95,8 +103,9 @@ module Picoride
     # 作られたプロジェクトの挙動を変えないため)。
     DEFAULT_PLATFORM_FAMILY = "esp32"
 
-    # ファミリーごとのビルド専用イメージ(docker/esp32/Dockerfile・docker/pico/Dockerfile)。
-    # Docker Hubの `youchan/picoride-builder-{esp32,pico}:<gemのバージョン>`
+    # ファミリーごとのビルド専用イメージ(docker/esp32・docker/pico・docker/wasmの
+    # それぞれのDockerfile)。Docker Hubの
+    # `youchan/picoride-builder-{esp32,pico,wasm}:<gemのバージョン>`
     # (接頭辞は version.rb の BUILDER_IMAGE_PREFIX)。自分でビルドしたイメージを
     # 使いたい場合は環境変数で丸ごと上書きできる(ESP32側は旧来の
     # PICORUBY_BUILDER_IMAGEも引き続き効く)。手元に無ければビルド開始時に自動で
@@ -107,7 +116,8 @@ module Picoride
     BUILDER_IMAGES = {
       "esp32" => ENV["PICORIDE_ESP32_BUILDER_IMAGE"] || ENV["PICORUBY_BUILDER_IMAGE"] ||
                  "#{BUILDER_IMAGE_PREFIX}-esp32:#{VERSION}",
-      "pico" => ENV["PICORIDE_PICO_BUILDER_IMAGE"] || "#{BUILDER_IMAGE_PREFIX}-pico:#{VERSION}"
+      "pico" => ENV["PICORIDE_PICO_BUILDER_IMAGE"] || "#{BUILDER_IMAGE_PREFIX}-pico:#{VERSION}",
+      "wasm" => ENV["PICORIDE_WASM_BUILDER_IMAGE"] || "#{BUILDER_IMAGE_PREFIX}-wasm:#{VERSION}"
     }.freeze
 
     # pullできなかったとき(未公開のバージョン・オフライン等)に案内する、
@@ -123,9 +133,19 @@ module Picoride
     CONTAINER_PROJECT_MOUNT = "/project_src"
     CONTAINER_R2P2_MOUNT = "/R2P2-ESP32"
     CONTAINER_PICORUBY_MOUNT = "/picoruby"
-    CONTAINER_STATE_MOUNTS = { "esp32" => CONTAINER_R2P2_MOUNT, "pico" => CONTAINER_PICORUBY_MOUNT }.freeze
+    CONTAINER_PICORUBY_WASM_MOUNT = "/picoruby-wasm"
+    CONTAINER_STATE_MOUNTS = {
+      "esp32" => CONTAINER_R2P2_MOUNT,
+      "pico" => CONTAINER_PICORUBY_MOUNT,
+      "wasm" => CONTAINER_PICORUBY_WASM_MOUNT
+    }.freeze
 
-    ALLOWED_EXTENSIONS = %w[.rb .c .h .rake].freeze
+    ALLOWED_EXTENSIONS = %w[.rb .c .h .rake .html .js .css].freeze
+
+    # www/配下(PicoRuby.wasm向けのWeb資産)に新規作成できる拡張子。
+    # home/・lib/(実機のRubyスクリプト置き場、.rbのみ)、mrbgems/等
+    # (ALLOWED_EXTENSIONS全部)とは別の扱いにしてある。
+    WWW_EXTENSIONS = %w[.rb .html .js .css].freeze
 
     # mrbgem名として許可する文字種。ディレクトリ名としてそのまま使うので、
     # パストラバーサルや意図しない特殊文字を避けるため英数字・アンダースコア・
@@ -142,8 +162,15 @@ module Picoride
     LIB_DIRNAME = "lib"
     DEVICE_DIRNAMES = [HOME_DIRNAME, LIB_DIRNAME].freeze
     MRBGEMS_DIRNAME = "mrbgems"
+
+    # PicoRuby.wasm向けのWeb資産(index.html・エントリポイントのRubyファイル・
+    # 任意のJS/CSS)の置き場。home/・lib/と違い実機のファイルシステムに対応する
+    # ものではない(ブラウザがそのまま配信・実行する静的ファイル)ので、
+    # DEVICE_DIRNAMESには含めずwww/として別扱いにしてある。
+    WWW_DIRNAME = "www"
+
     # プロジェクトの構造上必須で、削除・名前変更させないディレクトリ。
-    PROTECTED_DIRNAMES = [HOME_DIRNAME, LIB_DIRNAME, MRBGEMS_DIRNAME].freeze
+    PROTECTED_DIRNAMES = [HOME_DIRNAME, LIB_DIRNAME, WWW_DIRNAME, MRBGEMS_DIRNAME].freeze
 
     # home/・lib/配下の新規ファイルは.rbのみ(実機のファイルシステムに置くRubyスクリプト
     # であり、.c/.h/.rakeを置く場所ではないため)。
@@ -211,9 +238,16 @@ module Picoride
         platform_family(read_project_config["platform"])
       end
 
+      # ファミリーごとのビルド状態ディレクトリ名。
+      BUILD_STATE_DIRNAMES = {
+        "esp32" => R2P2_STATE_DIRNAME,
+        "pico" => PICO_STATE_DIRNAME,
+        "wasm" => WASM_STATE_DIRNAME
+      }.freeze
+
       # ファミリーごとのビルド状態ディレクトリの絶対パス。
       def build_state_dir(root, family)
-        File.join(root, family == "pico" ? PICO_STATE_DIRNAME : R2P2_STATE_DIRNAME)
+        File.join(root, BUILD_STATE_DIRNAMES.fetch(family, R2P2_STATE_DIRNAME))
       end
 
       # .gitignoreを(プロジェクト内に無ければ作成、あれば足りない行だけ追記して)
@@ -221,7 +255,8 @@ module Picoride
       # という要望から、プロジェクトの中に状態を置くようにした以上セットで必要になる。
       # 既存の.gitignoreの中身(ユーザー自身が書いた分)は壊さない。
       def ensure_project_gitignore(root)
-        entries = ["#{R2P2_STATE_DIRNAME}/", "#{PICO_STATE_DIRNAME}/", GENERATED_BUILD_CONFIG_FILENAME]
+        entries = ["#{R2P2_STATE_DIRNAME}/", "#{PICO_STATE_DIRNAME}/", "#{WASM_STATE_DIRNAME}/",
+                   GENERATED_BUILD_CONFIG_FILENAME]
         path = File.join(root, ".gitignore")
         existing = File.file?(path) ? File.read(path) : ""
         existing_lines = existing.lines.map(&:chomp)
@@ -257,9 +292,31 @@ module Picoride
 
         FileUtils.mkdir_p(File.join(root, HOME_DIRNAME))
         FileUtils.mkdir_p(File.join(root, LIB_DIRNAME))
+        FileUtils.mkdir_p(File.join(root, WWW_DIRNAME))
         File.write(File.join(root, HOME_DIRNAME, "app.rb"), "")
+        File.write(File.join(root, WWW_DIRNAME, "app.rb"), "")
+        File.write(File.join(root, WWW_DIRNAME, "index.html"), WWW_INDEX_HTML_TEMPLATE)
         File.write(File.join(root, BUILD_CONFIG_FILENAME), "")
       end
+
+      # www/の雛形index.html。init.iife.js・picoruby.js・picoruby.wasmは
+      # ビルド成果物として同じディレクトリ(wasm_public_dir)に置かれるので、
+      # ここでは相対パスで参照するだけでよい。app.rbは<script type="text/ruby"
+      # src="...">でソースのまま読み込む(PicoRuby.wasmはmrbcでの事前コンパイルを
+      # 要求しない。詳細はmrbgems/picoruby-wasm/npm/picoruby/README.md参照)。
+      WWW_INDEX_HTML_TEMPLATE = <<~HTML
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>PicoRuby.wasm</title>
+        </head>
+        <body>
+          <script type="text/ruby" src="app.rb"></script>
+          <script src="init.iife.js"></script>
+        </body>
+        </html>
+      HTML
 
       def json_error(status, message)
         halt status, { error: message }.to_json
@@ -291,6 +348,26 @@ module Picoride
         end
       end
 
+      # www/(PicoRuby.wasm向けのWeb資産)の配下か。
+      def under_www_dir?(rel)
+        prefix = "#{WWW_DIRNAME}/"
+        rel.start_with?(prefix) && rel.length > prefix.length
+      end
+
+      # 新規作成/リネームで許可する拡張子(場所によって変わる)。
+      # home/・lib/配下は実機に置くRubyスクリプトなので.rbのみ、www/配下は
+      # Web資産としてよく使うものだけ(.rb .html .js .css)、それ以外(mrbgems/等)は
+      # 編集できる拡張子(ALLOWED_EXTENSIONS)すべて。
+      def allowed_extensions_for(rel)
+        if under_device_dir?(rel)
+          [NEW_FILE_EXTENSION]
+        elsif under_www_dir?(rel)
+          WWW_EXTENSIONS
+        else
+          ALLOWED_EXTENSIONS
+        end
+      end
+
       # 新規ファイル/新規フォルダを作れる場所かどうか。以前はapp/(現home/)配下限定だったが、
       # 「ツリーのどのフォルダでも作成できるように、ただしmrbgems/直下は不可」
       # という要望で広げた。
@@ -306,12 +383,9 @@ module Picoride
         segments.length >= 3 && File.directory?(File.join(project_root, MRBGEMS_DIRNAME, segments[1]))
       end
 
-      # 新規ファイルに許可する拡張子。home/・lib/は実機に置くRubyスクリプトの
-      # 置き場なので.rbのみ、それ以外(mrbgemのmrblib/・src/等)は編集できる
-      # 拡張子(ALLOWED_EXTENSIONS)すべて。
+      # 新規ファイルに許可する拡張子かどうか(allowed_extensions_for参照)。
       def creatable_extension?(rel)
-        ext = File.extname(rel)
-        under_device_dir?(rel) ? ext == NEW_FILE_EXTENSION : ALLOWED_EXTENSIONS.include?(ext)
+        allowed_extensions_for(rel).include?(File.extname(rel))
       end
     end
 
@@ -580,8 +654,7 @@ module Picoride
       json_error(400, "invalid path") unless valid_relative_path?(rel)
       json_error(400, "cannot create files here") unless creatable_path?(rel)
       unless creatable_extension?(rel)
-        allowed = under_device_dir?(rel) ? [NEW_FILE_EXTENSION] : ALLOWED_EXTENSIONS
-        json_error(400, "unsupported file type (allowed: #{allowed.join(' ')})")
+        json_error(400, "unsupported file type (allowed: #{allowed_extensions_for(rel).join(' ')})")
       end
 
       full =
@@ -721,8 +794,7 @@ module Picoride
       if File.file?(full)
         json_error(400, "unsupported file type") unless ALLOWED_EXTENSIONS.include?(File.extname(full))
         unless creatable_extension?(new_rel)
-          allowed = under_device_dir?(new_rel) ? [NEW_FILE_EXTENSION] : ALLOWED_EXTENSIONS
-          json_error(400, "unsupported file type (allowed: #{allowed.join(' ')})")
+          json_error(400, "unsupported file type (allowed: #{allowed_extensions_for(new_rel).join(' ')})")
         end
       elsif File.directory?(full)
         if parent == MRBGEMS_DIRNAME && !valid_name?(name)
@@ -887,6 +959,10 @@ module Picoride
     # ESP32では idf.py / rake が ESP-IDF の export.sh を読み込んだシェルでしか
     # 使えないため、コンテナ内で明示的に読み込んでから inner_cmd を実行する
     # (Pico用イメージはPATH・PICO_SDK_PATHがENVで設定済みなので不要)。
+    # wasmも同様で、emccはEmscripten SDKのemsdk_env.shを読み込んだシェルでしか
+    # 使えない(emsdk_env.shが設定するNode.jsのパス等はインストール結果に依存する
+    # バージョン番号を含むため、固定のENV PATHとしてイメージに焼き込めない。
+    # docker/wasm/Dockerfile参照)。
     #
     # コンテナは(`--user`を付けず)デフォルトのrootで動かす。rakelib/setup.rakeが
     # 内部で呼ぶ`bundle install`がシステムのgemディレクトリ(/var/lib/gems/...)へ
@@ -901,7 +977,12 @@ module Picoride
     def builder_docker_command(family, state_dir, project_dir, inner_cmd)
       state_mount = CONTAINER_STATE_MOUNTS.fetch(family)
       chown_target = "#{Process.uid}:#{Process.gid}"
-      env_setup = family == "esp32" ? ". \"$IDF_PATH/export.sh\" > /dev/null && " : ""
+      env_setup =
+        case family
+        when "esp32" then ". \"$IDF_PATH/export.sh\" > /dev/null && "
+        when "wasm" then ". \"$EMSDK/emsdk_env.sh\" > /dev/null && "
+        else ""
+        end
       full_inner_cmd =
         "#{env_setup}cd #{Shellwords.escape(state_mount)} && " \
         "#{inner_cmd}; " \
@@ -945,13 +1026,16 @@ module Picoride
     # 例外を投げる(R2P2State.run! 参照)。Sinatraのリクエストハンドラ内で素通しすると
     # 生の500になってしまうので、json_errorでラップする。
     def ensure_build_checkout!(family, state_dir)
-      if family == "pico"
+      case family
+      when "pico"
         R2P2State.ensure_pico_checkout(state_dir)
+      when "wasm"
+        R2P2State.ensure_wasm_checkout(state_dir)
       else
         R2P2State.ensure_checkout(state_dir)
       end
     rescue StandardError => e
-      name = family == "pico" ? "picoruby(R2P2)" : "R2P2-ESP32"
+      name = { "pico" => "picoruby(R2P2)", "wasm" => "picoruby(wasm)" }.fetch(family, "R2P2-ESP32")
       json_error(500, "#{name}のセットアップに失敗しました: #{e.message}")
     end
 
@@ -1038,8 +1122,11 @@ module Picoride
       ensure_build_checkout!(family, state_dir)
 
       inner_cmd =
-        if family == "pico"
+        case family
+        when "pico"
           pico_build_inner_command(root, project_config)
+        when "wasm"
+          wasm_build_inner_command(root, state_dir)
         else
           esp32_build_inner_command(root, state_dir, project_config)
         end
@@ -1069,6 +1156,66 @@ module Picoride
       "#{PICO_PREPARE_COMMAND} && " \
         "{ [ -x bin/mrbc ] || MRUBY_CONFIG=build_config/mrbc.rb rake; } && " \
         "#{prepare_project_build_config(root)} rake r2p2:#{vm}:#{board}:#{PICO_BUILD_MODE}"
+    end
+
+    # ビルド成果物(npm/picoruby/dist/からコピーする3ファイル)から組み立てる
+    # picoruby.jsのビルド成果物一式の出力先ディレクトリ名。npm/picoruby/dist内の
+    # ファイル名そのもの(init.iife.js・picoruby.js・picoruby.wasm)。
+    WASM_DIST_FILES = %w[init.iife.js picoruby.js picoruby.wasm].freeze
+
+    # mrbgems/picoruby-mbedtls/lib/mbedtlsは、本家picorubyリポジトリ内で
+    # mrbgems/picoruby-r2p2/lib/pico-sdk/lib/mbedtlsへのシンボリックリンクとして
+    # git管理されている(Pico/R2P2ビルドがpico-sdk側のmbedtlsを共有するための仕組み)。
+    # picoruby-wasm.rbのgem構成にはpicoruby-drbが含まれ、これが間接的に
+    # picoruby-mbedtlsを要求するため、wasmビルドでもこのリンク先の有無が
+    # チェックされる。リンク先に実体(mbedtlsのヘッダー)が無いと、
+    # picoruby-mbedtls/mrbgem.rakeが「Mbed TLS submodule is not initialized」と
+    # 出してpico-sdk一式 + mbedtls(depth指定なしのフルクローン、数百MB)を
+    # 自動でgit submodule updateしてしまい、初回ビルドが数分〜十数分単位で
+    # 遅くなる(実際にビルドして確認した)。
+    #
+    # 最初は「lib/pico-sdk/lib/mbedtlsだけをシンボリックリンクにする」対策を
+    # 試したが、一度でも自動初期化が走ってpico-sdkが本物のgitサブモジュールとして
+    # チェックアウトされると、rm -rfで中身を消してもgit側のサブモジュール登録情報は
+    # 残ったままで、rake実行中の別の処理が「未初期化」と再判定して作ったはずの
+    # シンボリックリンクを上書きしてしまう不具合が実際に起きた(本番投入前に
+    # 気づけてよかった類のバグ)。Pico用イメージのPICO_PREPARE_COMMANDと同じく、
+    # pico-sdkという**ディレクトリ自体**をシンボリックリンクにする対策に直した
+    # (gitからは「サブモジュールの登録パスがそもそもディレクトリではない」ように
+    # 見えるため、再チェックアウトが起きない)。wasmビルドにpico-sdk本体
+    # (ARMツールチェイン設定等)は不要なので、mbedtlsだけを含む最小限の構造
+    # ($WASM_PICO_SDK_PATH/lib/mbedtls、docker/wasm/Dockerfile)を用意してある。
+    WASM_PICO_SDK_DIR = "mrbgems/picoruby-r2p2/lib/pico-sdk"
+    WASM_PREPARE_COMMAND =
+      "{ [ -L #{WASM_PICO_SDK_DIR} ] || " \
+      "{ rm -rf #{WASM_PICO_SDK_DIR} && ln -s \"$WASM_PICO_SDK_PATH\" #{WASM_PICO_SDK_DIR}; }; }"
+
+    # PicoRuby.wasm: picorubyの`CONFIG=picoruby-wasm rake`(build_config/picoruby-wasm.rb、
+    # mrbgems/picoruby-wasm/mrbgem.rake)を実行する。ESP32のstorage/home・Picoの
+    # PicoModemアップロードに相当する「成果物の配置」はここでは2段階になる:
+    #
+    # 1. www/(index.html・エントリポイントのRubyファイル等、ユーザーが書くWeb資産)を
+    #    public/へコピーする(ESP32のhome/・lib/を storage/home・storage/libへ
+    #    コピーするのと同じ発想。前回ビルドの残骸が残らないよう、まず空にする)
+    # 2. ビルド後、生成されたpicoruby.js・picoruby.wasmと、npm/picoruby/distに
+    #    静的にコミットされているローダー(init.iife.js、ビルドでは生成されない)を
+    #    同じpublic/へコピーする(init.iife.jsは自分と同じディレクトリから
+    #    picoruby.jsをdynamic importするため、3ファイルは同じディレクトリに
+    #    置く必要がある)
+    #
+    # 1はホスト側(ビルドコンテナに入る前)、2はコンテナ内のinner_cmdとして行う。
+    # public/はwasm_public_dir(GET /api/firmware/wasm/*が配信する)。
+    def wasm_build_inner_command(root, state_dir)
+      public_dir = wasm_public_dir(root)
+      FileUtils.mkdir_p(public_dir)
+      FileUtils.rm_rf(Dir.glob(File.join(public_dir, "*")))
+      www_dir = File.join(root, WWW_DIRNAME)
+      FileUtils.cp_r(Dir.glob(File.join(www_dir, "*")), public_dir) if Dir.exist?(www_dir)
+
+      dist_dir = "mrbgems/picoruby-wasm/npm/picoruby/dist"
+      copy_cmd = WASM_DIST_FILES.map { |name| "#{dist_dir}/#{name}" }.join(" ")
+      "#{WASM_PREPARE_COMMAND} && " \
+        "#{prepare_project_build_config(root)} CONFIG=picoruby-wasm rake && cp #{copy_cmd} public/"
     end
 
     # Wi-Fi付きボード(pico_w/pico2_w)のbuild_configが使うpicoruby-socket・
@@ -1147,6 +1294,8 @@ module Picoride
     #   ディレクトリが分かれていてターゲット切り替えの準備は不要なので、
     #   「そのボードのビルド成果物を消してクリーンな状態からビルドし直せるようにする」
     #   だけ(picorubyのチェックアウト自体はensure_build_checkout!で行われる)。
+    # - wasm: `rake wasm:clean`(picoruby/tasks/picoruby/wasm.rake)。ターゲットが
+    #   1種類しかなく切り替えの準備も不要なので、Picoと同じく成果物を消すだけ。
     post "/api/platform" do
       content_type :json
 
@@ -1165,9 +1314,12 @@ module Picoride
       ensure_build_checkout!(family, state_dir)
 
       inner_cmd =
-        if family == "pico"
+        case family
+        when "pico"
           board, vm = pico_board_and_vm!(project_config)
           "#{PICO_PREPARE_COMMAND} && rake r2p2:#{vm}:#{board}:clean"
+        when "wasm"
+          "#{WASM_PREPARE_COMMAND} && rake wasm:clean"
         else
           "rake setup_#{platform}"
         end
@@ -1262,6 +1414,42 @@ module Picoride
         version: Time.now.strftime("%Y%m%d%H%M%S"),
         builds: [{ chipFamily: chip_family, parts: parts }]
       }.to_json
+    end
+
+    # --- PicoRuby.wasm のプレビュー -------------------------------------------
+    #
+    # ESP32(Web Serial経由の書き込み)・Pico(.uf2ダウンロード)と違い、wasmは
+    # 実機への書き込みという概念が無い。ビルド成果物(index.html・エントリポイントの
+    # Rubyファイル・picoruby.wasm一式)をそのままブラウザで配信するだけで動くので、
+    # サーバはwasm_build_inner_commandが組み立てたpublic/をそのまま配信する。
+    # UI側(menu_bar.rb)はこれを新規タブで開く「プレビューを開く」ボタンを出す。
+
+    def wasm_public_dir(root)
+      File.join(build_state_dir(root, "wasm"), "public")
+    end
+
+    # ワイルドカード側(下)と同じ安全確認(current_platform_family)を経由させる
+    # ため、"/api/firmware/wasm" 単体は index.html へのリダイレクトにしてある。
+    get "/api/firmware/wasm" do
+      redirect "/api/firmware/wasm/index.html"
+    end
+
+    get "/api/firmware/wasm/*" do
+      json_error(400, "target is not WebAssembly") unless current_platform_family == "wasm"
+
+      rel_path = params[:splat].first
+      rel_path = "index.html" if rel_path.empty?
+
+      full =
+        begin
+          safe_path(wasm_public_dir(project_root), rel_path)
+        rescue ArgumentError
+          json_error(400, "invalid path")
+        end
+
+      json_error(404, "not built yet") unless File.file?(full)
+
+      send_file full
     end
 
     # ビルド成果物の .bin ファイルを配信する。flash_args の相対パスをそのまま受け取る

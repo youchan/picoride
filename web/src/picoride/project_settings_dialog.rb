@@ -37,6 +37,9 @@ module PicoRIDE
         ['pico_w', 'Pico W (RP2040)'],
         ['pico2', 'Pico 2 (RP2350)'],
         ['pico2_w', 'Pico 2 W (RP2350)']
+      ]],
+      ['WebAssembly', [
+        ['wasm', 'PicoRuby.wasm (Browser)']
       ]]
     ].freeze
 
@@ -60,8 +63,16 @@ module PicoRIDE
                 '現れたドライブ(RPI-RP2 / RP2350)へコピーすると書き込めます。' +
                 'app/ はターミナルタブの「app/ をアップロード」で転送してください。'
 
+    WASM_NOTE = 'ビルドするとブラウザで動くpicoruby.wasm一式ができます。実機への書き込みは' +
+                '無いので、「プレビューを開く」から新規タブでそのまま確認できます。' +
+                'index.html・エントリポイントのRubyファイルはwww/に置いてください。'
+
     def self.pico?(platform)
       PICO_BOARD_VMS.key?(platform.to_s)
+    end
+
+    def self.wasm?(platform)
+      platform.to_s == 'wasm'
     end
 
     # そのターゲットで選べるVMかどうか(空文字=デフォルトは常に可)。
@@ -80,8 +91,10 @@ module PicoRIDE
           h2 { "プロジェクト設定(#{props[:project_path]})" }
           div(class: 'build-options') do
             render_platform_select
-            render_vm_select
-            if ProjectSettingsDialog.pico?(props[:platform])
+            render_vm_select unless ProjectSettingsDialog.wasm?(props[:platform])
+            if ProjectSettingsDialog.wasm?(props[:platform])
+              render_wasm_note
+            elsif ProjectSettingsDialog.pico?(props[:platform])
               render_pico_note
             else
               render_usb_console_checkbox
@@ -187,6 +200,12 @@ module PicoRIDE
     def render_pico_note
       div(class: 'build-option-note') do
         span { PICO_NOTE }
+      end
+    end
+
+    def render_wasm_note
+      div(class: 'build-option-note') do
+        span { WASM_NOTE }
       end
     end
 

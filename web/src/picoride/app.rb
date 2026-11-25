@@ -33,6 +33,10 @@ module PicoRIDE
     LIB_DIRNAME = 'lib'
     DEVICE_DIRNAMES = [HOME_DIRNAME, LIB_DIRNAME]
     MRBGEMS_DIRNAME = 'mrbgems'
+    # PicoRuby.wasm向けのWeb資産(index.html・エントリポイントのRubyファイル・
+    # 任意のJS/CSS)の置き場。home/・lib/と違い実機のファイルシステムに対応する
+    # ものではないので、DEVICE_DIRNAMESには含めず別扱いにしてある。
+    WWW_DIRNAME = 'www'
 
     # PicoModemプロトコル定数(picoruby-picomodemのmrblib/picomodem.rbと対応)
     TERM_FILE_WRITE = 0x02
@@ -346,7 +350,9 @@ module PicoRIDE
     def file_tree_nodes
       root = {}
       state[:files].each { |path| insert_file_tree_path(root, path.split('/'), '') }
-      (state[:dirs] + DEVICE_DIRNAMES).each { |path| insert_file_tree_dir_path(root, path.split('/'), '') }
+      (state[:dirs] + DEVICE_DIRNAMES + [WWW_DIRNAME]).each do |path|
+        insert_file_tree_dir_path(root, path.split('/'), '')
+      end
       sorted_file_tree_nodes(root)
     end
 
@@ -949,16 +955,27 @@ module PicoRIDE
       note ? "#{base}。#{note}" : base
     end
 
-    # 新規ファイルに使える拡張子の説明(サーバ側のcreatable_extension?と対応)。
-    # home/・lib/配下は実機に置くRubyスクリプトなので.rbのみ、それ以外は
-    # 編集できる拡張子すべて。
+    # 新規ファイルに使える拡張子の説明(サーバ側のallowed_extensions_forと対応)。
+    # home/・lib/配下は実機に置くRubyスクリプトなので.rbのみ、www/配下はWeb資産
+    # としてよく使うものだけ、それ以外は編集できる拡張子すべて。
     def new_file_extension_note(context_dir)
-      device_dir?(context_dir) ? '拡張子は.rb' : '拡張子は .rb / .c / .h / .rake'
+      if device_dir?(context_dir)
+        '拡張子は.rb'
+      elsif www_dir?(context_dir)
+        '拡張子は .rb / .html / .js / .css'
+      else
+        '拡張子は .rb / .c / .h / .rake'
+      end
     end
 
     # home/・lib/自身またはその配下か。
     def device_dir?(dir)
       DEVICE_DIRNAMES.any? { |d| dir == d || dir.start_with?("#{d}/") }
+    end
+
+    # www/自身またはその配下か。
+    def www_dir?(dir)
+      dir == WWW_DIRNAME || dir.start_with?("#{WWW_DIRNAME}/")
     end
 
     # PromptDialogの確定ボタン(または入力欄でのEnter)から呼ばれる。
@@ -1125,6 +1142,7 @@ module PicoRIDE
       end
       return :mrbgems_dir if node[:path] == MRBGEMS_DIRNAME
       return :device_dir if DEVICE_DIRNAMES.include?(node[:path])
+      return :www_dir if node[:path] == WWW_DIRNAME
 
       :other_dir
     end
@@ -1169,7 +1187,7 @@ module PicoRIDE
         context_menu_item('削除…') { confirm_delete_file(menu[:path]) }
       when :root_file
         context_menu_item('削除…') { confirm_delete_file(menu[:path]) }
-      when :device_dir
+      when :device_dir, :www_dir
         context_menu_item('ファイルを作成…') { show_new_file_dialog(menu[:path]) }
         context_menu_item('フォルダを作成…') { show_new_folder_dialog(menu[:path]) }
       when :mrbgems_dir

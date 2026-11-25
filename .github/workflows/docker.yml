@@ -1,7 +1,8 @@
-# ビルド専用Dockerイメージ(docker/esp32・docker/pico)をビルドしてDocker Hubへpushする。
+# ビルド専用Dockerイメージ(docker/esp32・docker/pico・docker/wasm)をビルドして
+# Docker Hubへpushする。
 #
 # - v* のタグ(例: v0.2.0)をpushすると、そのバージョンのイメージ
-#   <namespace>/picoride-builder-{esp32,pico}:<version> と :latest を公開する。
+#   <namespace>/picoride-builder-{esp32,pico,wasm}:<version> と :latest を公開する。
 #   タグとgemのバージョン(lib/picoride/version.rb)が食い違っていたら失敗させる
 #   (picoride gemは自分と同じバージョンのイメージをpullしに行くため)
 # - Actionsタブから手動実行(workflow_dispatch)もできる。この場合は
@@ -25,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        family: [esp32, pico]
+        family: [esp32, pico, wasm]
     steps:
       - uses: actions/checkout@v4
 
